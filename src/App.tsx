@@ -3,6 +3,7 @@ import { useAlertasStore } from './hooks/useAlertasStore';
 import { FichaInfo, Aprendiz, Fase } from './types';
 import UploadSection from './components/UploadSection';
 import AdminSection from './components/AdminSection';
+import FichasTable from './components/FichasTable';
 import DashboardPage from './pages/DashboardPage';
 import { signInWithPopup, signOut, onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
 import { auth, googleAuthProvider } from './lib/firebase.ts';
@@ -842,179 +843,13 @@ export default function App() {
                   )}
                 </div>
               ) : (
-                <div className="space-y-4">
-                  {/* Search and Date-Vigencia Filter Tabs block */}
-                  <div className="bg-white border border-slate-200.5 p-4 rounded-xl shadow-4xs space-y-4">
-                    <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
-                      
-                      {/* Search box with inline label */}
-                      <div className="relative flex-1 max-w-md">
-                        <input
-                          type="text"
-                          placeholder="Buscar ficha por código o programa..."
-                          value={fichasSearchQuery}
-                          onChange={e => setFichasSearchQuery(e.target.value)}
-                          className="w-full text-xs px-3 py-2.5 pl-8 border border-slate-250 rounded-lg text-slate-800 bg-slate-50/50 focus:bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 font-medium"
-                        />
-                        <span className="absolute left-2.5 top-3 text-[13px] text-slate-400 select-none">🔍</span>
-                      </div>
-
-                      {/* Date Tabs Filter group */}
-                      <div className="flex flex-wrap items-center gap-1 bg-slate-100 p-1 rounded-lg border border-slate-205">
-                        <button
-                          onClick={() => setFichasTabFilter('activas')}
-                          className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all cursor-pointer ${
-                            fichasTabFilter === 'activas'
-                              ? 'bg-white text-emerald-700 shadow-4xs border border-slate-200/50'
-                              : 'text-slate-500 hover:text-slate-800'
-                          }`}
-                        >
-                          🟢 Activas (Vigentes)
-                        </button>
-                        <button
-                          onClick={() => setFichasTabFilter('futuras')}
-                          className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all cursor-pointer ${
-                            fichasTabFilter === 'futuras'
-                              ? 'bg-white text-blue-700 shadow-4xs border border-slate-200/50'
-                              : 'text-slate-500 hover:text-slate-800'
-                          }`}
-                        >
-                          📅 Futuras
-                        </button>
-                        <button
-                          onClick={() => setFichasTabFilter('finalizadas')}
-                          className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all cursor-pointer ${
-                            fichasTabFilter === 'finalizadas'
-                              ? 'bg-white text-slate-700 shadow-4xs border border-slate-200/50'
-                              : 'text-slate-500 hover:text-slate-800'
-                          }`}
-                        >
-                          🔴 Terminadas
-                        </button>
-                        <button
-                          onClick={() => setFichasTabFilter('todas')}
-                          className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all cursor-pointer ${
-                            fichasTabFilter === 'todas'
-                              ? 'bg-white text-slate-800 shadow-4xs border border-slate-200/50'
-                              : 'text-slate-500 hover:text-slate-800'
-                          }`}
-                        >
-                          Todas ({savedFichas.length})
-                        </button>
-                      </div>
-
-                    </div>
-
-                    {/* Results count label */}
-                    <div className="text-[10.5px] text-slate-450 font-semibold flex items-center justify-between flex-wrap gap-2">
-                      <div className="flex items-center gap-1.5">
-                        <span>Fichas encontradas: <strong className="text-slate-700">{getFilteredFichas().length}</strong> de {savedFichas.length} en base de datos</span>
-                        <span className="text-slate-200">|</span>
-                        <span>Filtradas por rango de vigencia</span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-[9.5px] text-slate-400">Hoy: {new Date().toLocaleDateString('es-CO', { year: 'numeric', month: 'short', day: 'numeric' })}</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {getFilteredFichas().length === 0 ? (
-                    <div className="text-center py-12 bg-white rounded-xl border border-slate-200 p-6 space-y-3">
-                      <p className="text-xs text-slate-400 font-semibold">Ninguna ficha coincide con los criterios de búsqueda o con el filtro de vigencia seleccionado.</p>
-                      <button 
-                        onClick={() => { setFichasTabFilter('todas'); setFichasSearchQuery(''); }}
-                        className="text-xs font-extrabold bg-[#39A900]/10 hover:bg-[#39A900]/20 text-[#39A900] px-4 py-2 rounded-lg border border-[#39A900]/10 transition-colors cursor-pointer"
-                      >
-                        Mostrar todas las fichas del catálogo
-                      </button>
-                    </div>
-                  ) : (
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 animate-fade-in" id="fichas-grid-container">
-                      {getFilteredFichas().map(ficha => {
-                        const status = getFichaDateStatus(ficha.fechaInicio, ficha.fechaFin);
-                        return (
-                          <div 
-                            key={ficha.id}
-                            onClick={() => handleSelectSavedFicha(ficha.codigoFicha)}
-                            className="bg-white rounded-xl border border-slate-250 hover:border-[#39A900]/55 shadow-3xs hover:shadow-md cursor-pointer transition-all flex flex-col justify-between overflow-hidden relative group"
-                          >
-                            {/* Left accent strip colored based on status */}
-                            <div className={`absolute top-0 bottom-0 left-0 w-1.5 transition-colors ${
-                              status === 'activas' 
-                                ? 'bg-[#39A900] group-hover:bg-[#007832]' 
-                                : status === 'futuras'
-                                ? 'bg-blue-500 group-hover:bg-blue-600'
-                                : 'bg-slate-400 group-hover:bg-slate-500'
-                            }`}></div>
-
-                            <div className="p-5 pl-7 space-y-3">
-                              <div className="flex items-center justify-between">
-                                <span className="font-mono text-xs font-black text-slate-400 bg-slate-100 px-2.5 py-0.5 rounded-full">
-                                  COD: {ficha.codigoFicha}
-                                </span>
-                                <div className="flex items-center gap-1.5">
-                                  <span className={`text-[9.5px] uppercase font-black px-2 py-0.5 rounded-sm ${
-                                    status === 'activas' 
-                                      ? 'bg-emerald-50 text-emerald-800 border border-emerald-100' 
-                                      : status === 'futuras'
-                                      ? 'bg-blue-50 text-blue-800 border border-blue-105'
-                                      : 'bg-slate-105 text-slate-650'
-                                  }`}>
-                                    {status === 'activas' ? 'Vigente' : status === 'futuras' ? 'Futura' : 'Terminada'}
-                                  </span>
-                                  <span className="text-[10px] text-emerald-800 bg-emerald-50 px-2 py-0.5 border border-emerald-101 rounded font-semibold capitalize">
-                                    {ficha.rolEnFicha || 'Participante'}
-                                    {ficha.area && ficha.area !== 'General' ? ` - ${ficha.area}` : ''}
-                                  </span>
-                                </div>
-                              </div>
-
-                              <div>
-                                <h3 className="text-sm font-bold text-slate-800 select-none group-hover:text-[#39A900] transition-colors line-clamp-1" title={ficha.programaFormacion}>
-                                  {ficha.programaFormacion}
-                                </h3>
-                                <div className="flex items-center justify-between gap-2 mt-0.5">
-                                  <p className="text-[10.5px] text-slate-400 font-semibold">{ficha.nivel || 'Tecnólogo'}</p>
-                                  
-                                  {/* Visual indicator for loaded learners */}
-                                  {ficha.aprendicesCargados ? (
-                                    <span className="inline-flex items-center gap-1 text-[10px] text-emerald-700 bg-emerald-50 border border-emerald-100 rounded px-2 py-0.5 font-bold">
-                                      <span className="w-1.5 h-1.5 bg-[#39A900] rounded-full animate-ping mr-0.5"></span>
-                                      🎓 {ficha.totalAprendices || 0} cargados
-                                    </span>
-                                  ) : (
-                                    <span className="inline-flex items-center gap-1 text-[10px] text-amber-700 bg-amber-50 border border-amber-100 rounded px-2 py-0.5 font-bold">
-                                      <span className="w-1.5 h-1.5 bg-amber-500 rounded-full mr-0.5"></span>
-                                      ⚠️ Sin aprendices
-                                    </span>
-                                  )}
-                                </div>
-                              </div>
-
-                              <div className="border-t border-slate-100 my-2"></div>
-
-                              <div className="flex items-center justify-between text-[11px] text-slate-450">
-                                <span className="flex items-center gap-1">
-                                  <Clock className="w-3.5 h-3.5 text-slate-400" />
-                                  <span>Vigencia</span>
-                                </span>
-                                <span className="font-bold text-slate-600 text-[10px]">
-                                  {ficha.fechaInicio?.substring(0, 10)} / {ficha.fechaFin?.substring(0, 10)}
-                                </span>
-                              </div>
-                            </div>
-
-                            {/* Footer entry button */}
-                            <div className="bg-slate-50 px-5 py-3 border-t border-slate-105 flex items-center justify-between text-xs font-bold text-[#39A900] group-hover:bg-slate-100/70 transition-colors">
-                              <span>Ver Cuadro de Alertas</span>
-                              <ChevronRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
+                <FichasTable
+                  savedFichas={savedFichas}
+                  onSelectFicha={handleSelectSavedFicha}
+                  onSuccessSync={reloadFichas}
+                  authToken={authToken || ''}
+                  isUserAdmin={isUserAdmin}
+                />
               )}
 
             </div>

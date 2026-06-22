@@ -9,6 +9,7 @@ export const instructores = pgTable('instructores', {
   correo: text('correo').notNull().unique(),
   contrasena: text('contrasena').default('sena123').notNull(), // User custom password default sena123
   rol: text('rol').notNull().default('Instructor Técnico'), // 'Administrativo', 'Vocero', 'Apoyo', 'Instructor Técnico', etc.
+  estado: text('estado').notNull().default('Activo'), // 'Activo' or 'Inactivo'
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 

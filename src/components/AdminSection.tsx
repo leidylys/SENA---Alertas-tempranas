@@ -142,6 +142,120 @@ export default function AdminSection({
   const [isSavingPass, setIsSavingPass] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
 
+  // Instructor deletion and soft-deletion/reallocation states
+  const [deleteTargetInstructor, setDeleteTargetInstructor] = useState<any | null>(null);
+  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
+  const [deletePrepData, setDeletePrepData] = useState<any | null>(null);
+  const [deleteReassignments, setDeleteReassignments] = useState<{ [key: string]: number | null }>({});
+  const [isDeletingInProgress, setIsDeletingInProgress] = useState(false);
+  const [isPreppingDelete, setIsPreppingDelete] = useState(false);
+
+  const handleRequestDeleteInstructor = async (ins: any) => {
+    if (isPreppingDelete) return;
+    setIsPreppingDelete(true);
+    setDeleteTargetInstructor(ins);
+    try {
+      const res = await fetch(`/api/administrativo/instructores/${ins.id}/prepare-delete`, {
+        headers: {
+          'Authorization': `Bearer ${authToken}`
+        }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setDeletePrepData(data);
+        
+        // Initialize reassignments dictionary
+        const initialReass: { [key: string]: number | null } = {};
+        if (data.assignments && Array.isArray(data.assignments)) {
+          data.assignments.forEach((link: any) => {
+            const key = `${link.fichaId}_${link.rolEnFicha}_${link.area || 'General'}`;
+            initialReass[key] = null;
+          });
+        }
+        setDeleteReassignments(initialReass);
+        setIsDeleteModalOpen(true);
+      } else {
+        const err = await res.json();
+        alert('Error al evaluar eliminación: ' + (err.error || 'El servidor declinó la solicitud'));
+      }
+    } catch (err: any) {
+      alert('Error de red al evaluar eliminación: ' + err.message);
+    } finally {
+      setIsPreppingDelete(false);
+    }
+  };
+
+  const handleConfirmDeleteInstructor = async () => {
+    if (!deleteTargetInstructor || !deletePrepData) return;
+
+    // Check if any "Instructor Líder" assignment is missing reassignment
+    let hasValidationError = false;
+    let validationMsg = '';
+    const payloadReassignments = [];
+
+    for (const link of deletePrepData.assignments) {
+      const key = `${link.fichaId}_${link.rolEnFicha}_${link.area || 'General'}`;
+      const chosenId = deleteReassignments[key];
+
+      if (link.rolEnFicha === 'Instructor Líder' && !chosenId) {
+        hasValidationError = true;
+        validationMsg = `Debes reasignar obligatoriamente un nuevo Instructor Líder para la Ficha ${link.codigoFicha}. Una Ficha no puede quedar sin responsable principal.`;
+        break;
+      }
+
+      payloadReassignments.push({
+        fichaId: link.fichaId,
+        rolEnFicha: link.rolEnFicha,
+        area: link.area,
+        newInstructorId: chosenId
+      });
+    }
+
+    if (hasValidationError) {
+      alert(validationMsg);
+      return;
+    }
+
+    setIsDeletingInProgress(true);
+    try {
+      const res = await fetch('/api/administrativo/instructores/delete-or-inactivate', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${authToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          instructorId: deleteTargetInstructor.id,
+          reassignments: payloadReassignments
+        })
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success) {
+          const s = data.summary;
+          let methodLabel = s.method === 'deleted' ? 'eliminado físicamente' : 'desactivado (Inactivo)';
+          alert(`✅ Operación Completada Exitosamente:\n\n- El instructor "${s.nombre}" fue ${methodLabel}.\n- Fichas reasignadas: ${s.reassignedCount}\n- Asignaciones de transversales retiradas: ${s.deletedCount}`);
+          
+          setIsDeleteModalOpen(false);
+          setDeleteTargetInstructor(null);
+          setDeletePrepData(null);
+          loadInstructors();
+          onSuccessSync();
+        } else {
+          alert('Error de procesamiento: ' + (data.error || 'No se pudo retirar el instructor'));
+        }
+      } else {
+        const err = await res.json();
+        alert('Error al realizar la operación: ' + (err.error || 'Error respuesta del servidor'));
+      }
+    } catch (err: any) {
+      alert('Error de red al intentar retirar instructor: ' + err.message);
+    } finally {
+      setIsDeletingInProgress(false);
+    }
+  };
+
   const handleResetSystem = async () => {
     const confirmMessage = '🚨 ATENCIÓN 🚨\n\n¿Está absolutamente seguro de que desea eliminar todas las fichas cargadas, programas, aprendices, calificaciones e intervenciones del sistema?\n\nEsto borrará todos los datos de ejemplo del sistema de manera irreversible. Los usuarios administradores conservarán sus accesos.';
     if (!window.confirm(confirmMessage)) return;
@@ -1510,17 +1624,28 @@ export default function AdminSection({
                                     </button>
                                   </div>
                                 ) : (
-                                  <button
-                                    onClick={() => {
-                                      setEditingPassRow(ins.id);
-                                      setNewPassInput(ins.contrasena || 'sena123');
-                                      setNewNameInput(formatInstructorNombre(ins.nombre, ins.correo));
-                                      setNewRolInput(ins.rol || 'Instructor Transversal');
-                                    }}
-                                    className="bg-white hover:bg-slate-50 border border-slate-200 text-slate-650 hover:text-slate-800 text-[10px] font-semibold px-2 py-1 rounded-md transition-all cursor-pointer flex items-center gap-1 mx-auto shadow-4xs"
-                                  >
-                                    <span>✏️ Editar Perfil</span>
-                                  </button>
+                                  <div className="flex flex-col gap-1.5 items-center justify-center mx-auto max-w-[125px]">
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setEditingPassRow(ins.id);
+                                        setNewPassInput(ins.contrasena || 'sena123');
+                                        setNewNameInput(formatInstructorNombre(ins.nombre, ins.correo));
+                                        setNewRolInput(ins.rol || 'Instructor Transversal');
+                                      }}
+                                      className="w-full bg-white hover:bg-slate-50 border border-slate-200 text-slate-650 hover:text-slate-850 text-[10px] font-semibold px-2 py-1 rounded-md transition-all cursor-pointer flex items-center justify-center gap-1 shadow-4xs"
+                                    >
+                                      <span>✏️ Editar Perfil</span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleRequestDeleteInstructor(ins)}
+                                      className="w-full bg-white hover:bg-rose-50 border border-rose-250 hover:border-rose-300 text-rose-650 hover:text-rose-755 text-[10px] font-semibold px-2 py-1 rounded-md transition-all cursor-pointer flex items-center justify-center gap-1 shadow-4xs"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5 text-rose-500 shrink-0" />
+                                      <span>Eliminar</span>
+                                    </button>
+                                  </div>
                                 )}
                               </td>
                             </tr>
@@ -1567,6 +1692,179 @@ export default function AdminSection({
           </div>
         )}
       </div>
+
+      {/* Dynamic Deletion & Reassignment Modal Dialog */}
+      {isDeleteModalOpen && deletePrepData && deleteTargetInstructor && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 animate-fade-in">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-2xl w-full overflow-hidden flex flex-col max-h-[90vh]">
+            {/* Header */}
+            <div className="bg-rose-50 border-b border-rose-100 p-5 flex items-start justify-between shrink-0">
+              <div className="flex items-start gap-3">
+                <div className="p-2 bg-rose-100 rounded-xl text-rose-700 mt-0.5">
+                  <AlertTriangle className="w-5 h-5" />
+                </div>
+                <div>
+                  <h4 className="text-sm font-extrabold text-slate-900">Retirar o Desvincular Instructor del Directorio</h4>
+                  <p className="text-[11px] text-slate-550 mt-1">
+                    Instructor: <strong className="text-rose-900">{formatInstructorNombre(deleteTargetInstructor.nombre, deleteTargetInstructor.correo)}</strong> • ({deleteTargetInstructor.correo})
+                  </p>
+                </div>
+              </div>
+              <button 
+                onClick={() => { setIsDeleteModalOpen(false); }}
+                className="text-slate-400 hover:text-slate-650 font-bold text-xs select-none cursor-pointer"
+              >
+                ✕ Cerrar
+              </button>
+            </div>
+
+            {/* Content Body */}
+            <div className="p-6 space-y-5 overflow-y-auto max-h-[60vh] custom-scrollbar">
+              
+              {/* Context Summary / Inactivation status explanation */}
+              {deletePrepData.countSeguimientos > 0 ? (
+                <div className="bg-amber-50 border border-amber-200 p-4 rounded-xl space-y-2 text-amber-905 text-xs leading-normal">
+                  <div className="flex items-center gap-1.5 font-bold">
+                    <span className="text-sm font-emoji">📌</span>
+                    <span>Trazabilidad Histórica Conservada (Soft-Delete)</span>
+                  </div>
+                  <p className="text-slate-655">
+                    Se dectectaron <strong className="text-amber-950">{deletePrepData.countSeguimientos} registros de seguimiento</strong> vinculados a este instructor. Por normas institucionales y para conservar la trazabilidad histórica de firmas, <strong>no se borrará físicamente el instructor</strong>. En su lugar, al confirmar, se cambiará su estado a <span className="bg-amber-100 border border-amber-300 px-1.5 py-0.5 rounded font-bold uppercase text-amber-800 text-[10px]">Inactivo</span>. Esto de manera inmediata impedirá que inicie sesión o que reciba nuevas cargas o asignaciones.
+                  </p>
+                </div>
+              ) : (
+                <div className="bg-emerald-50 border border-emerald-200 p-4 rounded-xl space-y-2 text-emerald-950 text-xs leading-normal">
+                  <div className="flex items-center gap-1.5 font-bold">
+                    <span className="text-sm font-emoji">✅</span>
+                    <span>Eliminación Física Permisible</span>
+                  </div>
+                  <p className="text-slate-655">
+                    Este instructor no cuenta con historial de seguimientos académicos en el sistema sena. Se procederá a realizar una <strong>eliminación total y física</strong> de su registro una vez reasignadas o canceladas sus fichas vigentes.
+                  </p>
+                </div>
+              )}
+
+              {/* Assignments / Fichas Associated */}
+              {deletePrepData.hasAssignments ? (
+                <div className="space-y-3">
+                  <div className="space-y-1">
+                    <span className="text-xs font-black text-slate-800 uppercase tracking-wide">Fichas Activas Vinculadas ({deletePrepData.assignments.length})</span>
+                    <p className="text-[10.5px] text-slate-450 leading-relaxed">
+                      El instructor posee fichas asignadas. Antes de proceder, debe reasignar la titularidad para evitar dejar fichas huérfanas:
+                    </p>
+                  </div>
+
+                  <div className="space-y-3.5 border border-slate-150 rounded-xl p-4 bg-slate-50/70">
+                    {deletePrepData.assignments.map((link: any) => {
+                      const key = `${link.fichaId}_${link.rolEnFicha}_${link.area || 'General'}`;
+                      const chosenVal = deleteReassignments[key] || '';
+                      const isLider = link.rolEnFicha === 'Instructor Líder';
+
+                      return (
+                        <div key={key} className="bg-white border border-slate-200 rounded-lg p-3.5 space-y-3 flex flex-col md:flex-row md:items-center md:justify-between md:gap-4 shadow-5xs text-xs">
+                          {/* Ficha info */}
+                          <div className="space-y-1 flex-1">
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-mono text-[10px] font-black bg-slate-100 rounded border border-slate-200 px-1.5 py-0.5 text-slate-600">
+                                COD: {link.codigoFicha}
+                              </span>
+                              <span className={`text-[9.5px] font-black uppercase rounded-sm px-1.5 py-0.5 border ${
+                                isLider ? 'bg-amber-50 border border-amber-200 text-amber-800' : 'bg-blue-50 border border-blue-200 text-blue-800'
+                              }`}>
+                                {link.rolEnFicha} {link.rolEnFicha === 'Instructor Transversal' ? ` • ${link.area || 'General'}` : ''}
+                              </span>
+                            </div>
+                            <h5 className="text-[11px] font-extrabold text-slate-700 line-clamp-1">{link.programaFormacion}</h5>
+                          </div>
+
+                          {/* Reassignment Dropdown selector */}
+                          <div className="max-w-xs w-full space-y-1">
+                            <span className="block text-[9px] text-slate-400 font-bold uppercase tracking-wider">{isLider ? 'Nuevo Instructor Líder (Obligatorio)' : 'Acción / Reasignación Transversal'}</span>
+                            <select
+                              value={chosenVal || ''}
+                              required={isLider}
+                              onChange={e => {
+                                const val = e.target.value ? parseInt(e.target.value) : null;
+                                setDeleteReassignments(prev => ({ ...prev, [key]: val }));
+                              }}
+                              className={`w-full font-semibold text-xs border rounded-lg px-2.5 py-1.5 focus:outline-none bg-white ${
+                                isLider && !chosenVal
+                                  ? 'border-red-300 bg-red-50/20 text-red-750 focus:ring-1 focus:ring-red-400'
+                                  : 'border-slate-250 text-slate-755 focus:ring-1 focus:ring-emerald-500'
+                              }`}
+                            >
+                              {/* Option for leader */}
+                              {isLider ? (
+                                <option value="">-- Seleccionar Nuevo Líder --</option>
+                              ) : (
+                                <option value="">Desvincular (Ficha queda con alerta o sin transversal en área)</option>
+                              )}
+                              
+                              {/* Filter candidates to exclude deleted instructor */}
+                              {deletePrepData.candidates && deletePrepData.candidates.map((c: any) => (
+                                <option key={c.id} value={c.id}>
+                                  {c.nombre} ({c.rol})
+                                </option>
+                              ))}
+                            </select>
+                            
+                            {isLider && !chosenVal && (
+                              <span className="text-[9px] text-red-550 font-bold block mt-0.5">⚠️ Reasignación de Líder requerida</span>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 p-4 bg-slate-50 border border-slate-150 rounded-xl text-xs text-slate-500 font-medium leading-normal">
+                  <span className="text-sm font-emoji">🎉</span>
+                  <span>Este instructor no tiene ninguna ficha de formación asignada actualmente. La operación se procesará de forma directa sin requerir reasociar cargos.</span>
+                </div>
+              )}
+
+              {/* Note about unassigned transversals */}
+              {deletePrepData.hasAssignments && deletePrepData.assignments.some((l: any) => l.rolEnFicha !== 'Instructor Líder') && (
+                <div className="text-[10.5px] text-slate-500 bg-slate-50 p-3 rounded-lg border border-slate-150 leading-relaxed">
+                  💡 <strong>Nota sobre Transversales:</strong> Si decide desvincular un área transversal sin reasignar la ficha a otro docente activo, el catálogo de control académico guardará una observación del área para alertar que falta su asignación.
+                </div>
+              )}
+
+            </div>
+
+            {/* Footer buttons */}
+            <div className="bg-slate-50 border-t border-slate-150 p-5 flex items-center justify-end gap-3 shrink-0">
+              <button
+                onClick={() => { setIsDeleteModalOpen(false); }}
+                disabled={isDeletingInProgress}
+                className="bg-white hover:bg-slate-105 border border-slate-200 text-slate-600 font-black text-xs px-4 py-2.5 rounded-xl cursor-pointer transition-colors"
+                type="button"
+              >
+                Regresar
+              </button>
+              <button
+                onClick={handleConfirmDeleteInstructor}
+                disabled={isDeletingInProgress || (deletePrepData.hasAssignments && deletePrepData.assignments.some((link: any) => link.rolEnFicha === 'Instructor Líder' && !deleteReassignments[`${link.fichaId}_${link.rolEnFicha}_${link.area || 'General'}`]))}
+                className="bg-rose-600 hover:bg-rose-700 disabled:opacity-40 disabled:cursor-not-allowed text-white font-extrabold text-xs px-6 py-2.5 rounded-xl flex items-center justify-center gap-1.5 shadow-sm transition-colors cursor-pointer"
+                type="button"
+              >
+                {isDeletingInProgress ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Procesando...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-3.5 h-3.5 text-white" />
+                    <span>Confirmar Retiro</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );

@@ -481,6 +481,346 @@ async function startServer() {
     }
   });
 
+  // Endpoints to safely delete/inactivate instructors and handle reassignments
+  app.get('/api/administrativo/instructores/:id/prepare-delete', requireAuth, async (req: AuthRequest, res) => {
+    try {
+      const instructorId = parseInt(req.params.id);
+      if (isNaN(instructorId)) {
+        return res.status(400).json({ error: 'ID de instructor inválido' });
+      }
+
+      // Check current user is Administrative
+      const requesterUid = req.user?.uid || '';
+      let requester = null;
+      try {
+        const reqResult = await db.select().from(instructores).where(eq(instructores.uid, requesterUid));
+        requester = reqResult[0];
+      } catch { /* ignore */ }
+      if (!requester) {
+        requester = memoryDb.instructores.find(i => i.uid === requesterUid);
+      }
+      if (!requester || requester.rol !== 'Administrativo') {
+        return res.status(403).json({ error: 'Acceso denegado: Se requiere rol Administrativo' });
+      }
+
+      // Locate target instructor
+      let targetInstructor = null;
+      try {
+        const instList = await db.select().from(instructores).where(eq(instructores.id, instructorId));
+        if (instList.length > 0) targetInstructor = instList[0];
+      } catch { /* ignore */ }
+      if (!targetInstructor) {
+        targetInstructor = memoryDb.instructores.find(i => i.id === instructorId);
+      }
+
+      if (!targetInstructor) {
+        return res.status(404).json({ error: 'Instructor no encontrado' });
+      }
+
+      // Load active assignments for this instructor in instructorFicha
+      let activeAssignments = [];
+      try {
+        const links = await db.select({
+          id: instructorFicha.id,
+          fichaId: instructorFicha.fichaId,
+          codigoFicha: fichas.codigoFicha,
+          programaId: fichas.programaId,
+          rolEnFicha: instructorFicha.rolEnFicha,
+          area: instructorFicha.area
+        })
+        .from(instructorFicha)
+        .innerJoin(fichas, eq(instructorFicha.fichaId, fichas.id))
+        .where(eq(instructorFicha.instructorId, instructorId));
+
+        for (const link of links) {
+          const prog = await db.select().from(programasFormacion).where(eq(programasFormacion.id, link.programaId));
+          activeAssignments.push({
+            id: link.id,
+            fichaId: link.fichaId,
+            codigoFicha: link.codigoFicha,
+            programaFormacion: prog[0]?.nombre || 'Sin programa',
+            rolEnFicha: link.rolEnFicha,
+            area: link.area || 'General'
+          });
+        }
+      } catch (dbErr: any) {
+        // Fallback memory
+        const links = memoryDb.instructorFicha.filter(link => link.instructorId === instructorId);
+        activeAssignments = links.map(link => {
+          const f = memoryDb.fichas.find(fi => fi.id === link.fichaId);
+          const prog = f ? memoryDb.programasFormacion.find(p => p.id === f.programaId) : null;
+          return {
+            id: link.id,
+            fichaId: link.fichaId,
+            codigoFicha: f ? f.codigoFicha : 'N/A',
+            programaFormacion: prog ? prog.nombre : 'Sin programa',
+            rolEnFicha: link.rolEnFicha,
+            area: link.area || 'General'
+          };
+        });
+      }
+
+      // Check count of historical follow-ups
+      let countSeguimientos = 0;
+      try {
+        const segs = await db.select().from(seguimientosHistorico).where(eq(seguimientosHistorico.instructorId, instructorId));
+        countSeguimientos = segs.length;
+      } catch (dbErr) {
+        const segs = memoryDb.seguimientosHistorico.filter(s => s.instructorId === instructorId);
+        countSeguimientos = segs.length;
+      }
+
+      // Find candidates (other ACTIVE instructors, excluding self)
+      let candidates = [];
+      try {
+        const term = await db.select({
+          id: instructores.id,
+          nombre: instructores.nombre,
+          correo: instructores.correo,
+          rol: instructores.rol
+        })
+        .from(instructores)
+        .where(eq(instructores.estado, 'Activo'));
+        candidates = term.filter(i => i.id !== instructorId);
+      } catch (dbErr) {
+        candidates = memoryDb.instructores
+          .filter(i => (i.estado || 'Activo') === 'Activo' && i.id !== instructorId)
+          .map(i => ({
+            id: i.id,
+            nombre: i.nombre,
+            correo: i.correo,
+            rol: i.rol
+          }));
+      }
+
+      return res.json({
+        instructor: {
+          id: targetInstructor.id,
+          nombre: targetInstructor.nombre,
+          correo: targetInstructor.correo,
+          rol: targetInstructor.rol,
+          estado: targetInstructor.estado || 'Activo'
+        },
+        hasAssignments: activeAssignments.length > 0,
+        assignments: activeAssignments,
+        countSeguimientos,
+        canPhysicalDelete: countSeguimientos === 0,
+        candidates
+      });
+    } catch (err: any) {
+      console.error('Error prep delete:', err);
+      return res.status(500).json({ error: 'Error preparando eliminación de instructor: ' + err.message });
+    }
+  });
+
+  app.post('/api/administrativo/instructores/delete-or-inactivate', requireAuth, async (req: AuthRequest, res) => {
+    try {
+      const { instructorId, reassignments } = req.body;
+      if (!instructorId) {
+        return res.status(400).json({ error: 'ID de instructor es requerido' });
+      }
+
+      // Check current user is Administrative
+      const requesterUid = req.user?.uid || '';
+      let requester = null;
+      try {
+        const reqResult = await db.select().from(instructores).where(eq(instructores.uid, requesterUid));
+        requester = reqResult[0];
+      } catch { /* ignore */ }
+      if (!requester) {
+        requester = memoryDb.instructores.find(i => i.uid === requesterUid);
+      }
+      if (!requester || requester.rol !== 'Administrativo') {
+        return res.status(403).json({ error: 'Acceso denegado: Se requiere rol Administrativo' });
+      }
+
+      // Locate target instructor
+      let targetInstructor = null;
+      try {
+        const instList = await db.select().from(instructores).where(eq(instructores.id, instructorId));
+        if (instList.length > 0) targetInstructor = instList[0];
+      } catch { /* ignore */ }
+      if (!targetInstructor) {
+        targetInstructor = memoryDb.instructores.find(i => i.id === instructorId);
+      }
+
+      if (!targetInstructor) {
+        return res.status(404).json({ error: 'Instructor no encontrado' });
+      }
+
+      let reassignmentsExecuted = 0;
+      let associationsDeleted = 0;
+
+      // Handle reassignments
+      if (Array.isArray(reassignments)) {
+        for (const reass of reassignments) {
+          const { fichaId, rolEnFicha, area, newInstructorId } = reass;
+          const cleanArea = area ? area.trim() : 'General';
+
+          if (rolEnFicha === 'Instructor Líder' && !newInstructorId) {
+            return res.status(400).json({ error: `La ficha ${fichaId} requiere obligatoriamente un nuevo Instructor Líder.` });
+          }
+
+          // Delete the old association first to prevent overlap issues
+          // Also, if newInstructorId is null and role is 'Instructor Transversal', we just delete it!
+          try {
+            await db.delete(instructorFicha).where(
+              and(
+                eq(instructorFicha.instructorId, instructorId),
+                eq(instructorFicha.fichaId, fichaId),
+                eq(instructorFicha.rolEnFicha, rolEnFicha),
+                eq(instructorFicha.area, cleanArea)
+              )
+            );
+          } catch { /* ignore */ }
+          
+          // Also in memory delete
+          memoryDb.instructorFicha = memoryDb.instructorFicha.filter(link => 
+            !(link.instructorId === instructorId &&
+              link.fichaId === fichaId &&
+              link.rolEnFicha === rolEnFicha &&
+              (link.area || 'General') === cleanArea)
+          );
+
+          if (newInstructorId) {
+            // Check if there is an existing assignment for the NEW instructor for this ficha, role and area
+            let existingNew = false;
+            try {
+              const checkList = await db.select().from(instructorFicha).where(
+                and(
+                  eq(instructorFicha.instructorId, newInstructorId),
+                  eq(instructorFicha.fichaId, fichaId),
+                  eq(instructorFicha.rolEnFicha, rolEnFicha),
+                  eq(instructorFicha.area, cleanArea)
+                )
+              );
+              existingNew = checkList.length > 0;
+            } catch {
+              existingNew = memoryDb.instructorFicha.some(link => 
+                link.instructorId === newInstructorId &&
+                link.fichaId === fichaId &&
+                link.rolEnFicha === rolEnFicha &&
+                (link.area || 'General') === cleanArea
+              );
+            }
+
+            // If it's a leader reassignment, ensure no other active Leader remains for this ficha
+            if (rolEnFicha === 'Instructor Líder') {
+              try {
+                await db.delete(instructorFicha).where(
+                  and(
+                    eq(instructorFicha.fichaId, fichaId),
+                    eq(instructorFicha.rolEnFicha, 'Instructor Líder')
+                  )
+                );
+              } catch { /* ignore */ }
+              memoryDb.instructorFicha = memoryDb.instructorFicha.filter(link =>
+                !(link.fichaId === fichaId && link.rolEnFicha === 'Instructor Líder')
+              );
+              existingNew = false; // forced brand-new or reset
+            }
+
+            // If it's a transversal reassignment, ensure no other transversal remains for the same area
+            if (rolEnFicha === 'Instructor Transversal') {
+              try {
+                await db.delete(instructorFicha).where(
+                  and(
+                    eq(instructorFicha.fichaId, fichaId),
+                    eq(instructorFicha.rolEnFicha, 'Instructor Transversal'),
+                    eq(instructorFicha.area, cleanArea)
+                  )
+                );
+              } catch { /* ignore */ }
+              memoryDb.instructorFicha = memoryDb.instructorFicha.filter(link =>
+                !(link.fichaId === fichaId && link.rolEnFicha === 'Instructor Transversal' && (link.area || 'General') === cleanArea)
+              );
+              existingNew = false; // forced brand-new or reset
+            }
+
+            if (!existingNew) {
+              try {
+                await db.insert(instructorFicha).values({
+                  instructorId: newInstructorId,
+                  fichaId: fichaId,
+                  rolEnFicha: rolEnFicha,
+                  area: cleanArea
+                });
+              } catch { /* ignore */ }
+              
+              // In memory
+              memoryDb.instructorFicha.push({
+                id: memoryDb.instructorFicha.length + 1,
+                instructorId: newInstructorId,
+                fichaId: fichaId,
+                rolEnFicha: rolEnFicha,
+                area: cleanArea
+              });
+            }
+
+            reassignmentsExecuted++;
+          } else {
+            associationsDeleted++;
+          }
+        }
+      }
+
+      // Check history count
+      let countSeguimientos = 0;
+      try {
+        const segs = await db.select().from(seguimientosHistorico).where(eq(seguimientosHistorico.instructorId, instructorId));
+        countSeguimientos = segs.length;
+      } catch {
+        countSeguimientos = memoryDb.seguimientosHistorico.filter(s => s.instructorId === instructorId).length;
+      }
+
+      let removalMethod = 'inactivated';
+
+      if (countSeguimientos > 0) {
+        // Can't physically delete due to historical records, so mark as Inactive
+        try {
+          await db.update(instructores)
+            .set({ estado: 'Inactivo' })
+            .where(eq(instructores.id, instructorId));
+        } catch { /* ignore */ }
+
+        // Memory db
+        const m = memoryDb.instructores.find(i => i.id === instructorId);
+        if (m) {
+          m.estado = 'Inactivo';
+        }
+        removalMethod = 'inactivated';
+      } else {
+        // Safe to physically delete
+        try {
+          // Double-check: clean remaining instructorFicha assignments for this deleted instructor
+          try {
+            await db.delete(instructorFicha).where(eq(instructorFicha.instructorId, instructorId));
+          } catch { /* ignore */ }
+          
+          await db.delete(instructores).where(eq(instructores.id, instructorId));
+        } catch { /* ignore */ }
+
+        // Memory db
+        memoryDb.instructorFicha = memoryDb.instructorFicha.filter(link => link.instructorId !== instructorId);
+        memoryDb.instructores = memoryDb.instructores.filter(i => i.id !== instructorId);
+        removalMethod = 'deleted';
+      }
+
+      return res.json({
+        success: true,
+        summary: {
+          nombre: targetInstructor.nombre,
+          reassignedCount: reassignmentsExecuted,
+          deletedCount: associationsDeleted,
+          method: removalMethod
+        }
+      });
+    } catch (err: any) {
+      console.error('Delete or inactivate error:', err);
+      return res.status(500).json({ error: 'Fallo al procesar la desvinculación: ' + err.message });
+    }
+  });
+
   // 4. Fetch all programs (with memory fallback)
   app.get('/api/programas', requireAuth, async (req, res) => {
     try {
@@ -528,20 +868,48 @@ async function startServer() {
           for (const f of allFichas) {
             const progResult = await db.select().from(programasFormacion).where(eq(programasFormacion.id, f.programaId));
             const assignments = await db.select({
+              id: instructores.id,
               nombre: instructores.nombre,
               correo: instructores.correo,
               rol: instructorFicha.rolEnFicha,
-              area: instructorFicha.area
+              area: instructorFicha.area,
+              estado: instructores.estado
             })
             .from(instructorFicha)
             .innerJoin(instructores, eq(instructorFicha.instructorId, instructores.id))
             .where(eq(instructorFicha.fichaId, f.id));
 
+            const hasActiveLider = assignments.some(a => 
+              (a.rol.toLowerCase().includes('lider') || a.rol.toLowerCase().includes('líder')) && 
+              a.estado === 'Activo'
+            );
+
+            const transversalAreas = Array.from(new Set(
+              assignments
+                .filter(a => a.rol.toLowerCase().includes('transversal'))
+                .map(a => a.area || 'General')
+            ));
+            
+            const missingTransversals: any[] = [];
+            for (const area of transversalAreas) {
+              const areaAss = assignments.filter(a => (a.area || 'General') === area && a.rol.toLowerCase().includes('transversal'));
+              const hasActiveTrans = areaAss.some(a => a.estado === 'Activo');
+              if (!hasActiveTrans) {
+                missingTransversals.push(area);
+              }
+            }
+
             // Count actual learners in database for this ficha
             let totalLearners = 0;
+            let countAlto = 0;
+            let countMedio = 0;
+            let countBajo = 0;
             try {
               const learnersList = await db.select().from(aprendicesFichas).where(eq(aprendicesFichas.fichaId, f.id));
               totalLearners = learnersList.length;
+              countAlto = learnersList.filter(l => l.nivelRiesgo === 'Alto' || l.nivelRiesgo === 'alto').length;
+              countMedio = learnersList.filter(l => l.nivelRiesgo === 'Medio' || l.nivelRiesgo === 'medio').length;
+              countBajo = learnersList.filter(l => l.nivelRiesgo === 'Bajo' || l.nivelRiesgo === 'bajo').length;
             } catch (learnersErr) {
               console.warn('Error fetching learners for count, fallback to 0', learnersErr);
             }
@@ -557,8 +925,13 @@ async function startServer() {
               rolEnFicha: 'Administrativo',
               instructor: assignments.map(a => `${a.nombre} (${a.rol}${a.area && a.area !== 'General' ? ' - ' + a.area : ''})`).join(' | ') || 'Sin asignación',
               assignments: assignments,
+              hasActiveLider,
+              missingTransversals,
               aprendicesCargados: totalLearners > 0,
-              totalAprendices: totalLearners
+              totalAprendices: totalLearners,
+              countAlto,
+              countMedio,
+              countBajo
             });
           }
           return res.json(completeList);
@@ -567,16 +940,45 @@ async function startServer() {
           const completeList = memoryDb.fichas.map(f => {
             const prog = memoryDb.programasFormacion.find(p => p.id === f.programaId);
             const links = memoryDb.instructorFicha.filter(link => link.fichaId === f.id);
-            const learnersCount = memoryDb.aprendicesFichas.filter(l => l.fichaId === f.id).length;
+            
+            const learnersList = memoryDb.aprendicesFichas.filter(l => l.fichaId === f.id);
+            const learnersCount = learnersList.length;
+            const countAlto = learnersList.filter(l => l.nivelRiesgo === 'Alto' || l.nivelRiesgo === 'alto').length;
+            const countMedio = learnersList.filter(l => l.nivelRiesgo === 'Medio' || l.nivelRiesgo === 'medio').length;
+            const countBajo = learnersList.filter(l => l.nivelRiesgo === 'Bajo' || l.nivelRiesgo === 'bajo').length;
+
             const assignments = links.map(link => {
               const inst = memoryDb.instructores.find(i => i.id === link.instructorId);
               return {
+                id: inst?.id || 0,
                 nombre: inst?.nombre || 'Instructor',
                 correo: inst?.correo || '',
                 rol: link.rolEnFicha,
-                area: link.area
+                area: link.area,
+                estado: inst?.estado || 'Activo'
               };
             });
+
+            const hasActiveLider = assignments.some(a => 
+              (a.rol.toLowerCase().includes('lider') || a.rol.toLowerCase().includes('líder')) && 
+              a.estado === 'Activo'
+            );
+
+            const transversalAreas = Array.from(new Set(
+              assignments
+                .filter(a => a.rol.toLowerCase().includes('transversal'))
+                .map(a => a.area || 'General')
+            ));
+            
+            const missingTransversals: any[] = [];
+            for (const area of transversalAreas) {
+              const areaAss = assignments.filter(a => (a.area || 'General') === area && a.rol.toLowerCase().includes('transversal'));
+              const hasActiveTrans = areaAss.some(a => a.estado === 'Activo');
+              if (!hasActiveTrans) {
+                missingTransversals.push(area);
+              }
+            }
+
             return {
               id: f.id,
               codigoFicha: f.codigoFicha,
@@ -588,8 +990,13 @@ async function startServer() {
               rolEnFicha: 'Administrativo',
               instructor: assignments.map(a => `${a.nombre} (${a.rol}${a.area && a.area !== 'General' ? ' - ' + a.area : ''})`).join(' | ') || 'Sin asignación',
               assignments: assignments,
+              hasActiveLider,
+              missingTransversals,
               aprendicesCargados: learnersCount > 0,
-              totalAprendices: learnersCount
+              totalAprendices: learnersCount,
+              countAlto,
+              countMedio,
+              countBajo
             };
           });
           return res.json(completeList);
@@ -614,22 +1021,71 @@ async function startServer() {
         const completeList = [];
         for (const f of assigned) {
           const progResult = await db.select().from(programasFormacion).where(eq(programasFormacion.id, f.programaId));
+          const assignments = await db.select({
+            id: instructores.id,
+            nombre: instructores.nombre,
+            correo: instructores.correo,
+            rol: instructorFicha.rolEnFicha,
+            area: instructorFicha.area,
+            estado: instructores.estado
+          })
+          .from(instructorFicha)
+          .innerJoin(instructores, eq(instructorFicha.instructorId, instructores.id))
+          .where(eq(instructorFicha.fichaId, f.id));
+
+          const hasActiveLider = assignments.some(a => 
+            (a.rol.toLowerCase().includes('lider') || a.rol.toLowerCase().includes('líder')) && 
+            a.estado === 'Activo'
+          );
+
+          const transversalAreas = Array.from(new Set(
+            assignments
+              .filter(a => a.rol.toLowerCase().includes('transversal'))
+              .map(a => a.area || 'General')
+          ));
           
+          const missingTransversals: any[] = [];
+          for (const area of transversalAreas) {
+            const areaAss = assignments.filter(a => (a.area || 'General') === area && a.rol.toLowerCase().includes('transversal'));
+            const hasActiveTrans = areaAss.some(a => a.estado === 'Activo');
+            if (!hasActiveTrans) {
+              missingTransversals.push(area);
+            }
+          }
+
           let totalLearners = 0;
+          let countAlto = 0;
+          let countMedio = 0;
+          let countBajo = 0;
           try {
             const learnersList = await db.select().from(aprendicesFichas).where(eq(aprendicesFichas.fichaId, f.id));
             totalLearners = learnersList.length;
+            countAlto = learnersList.filter(l => l.nivelRiesgo === 'Alto' || l.nivelRiesgo === 'alto').length;
+            countMedio = learnersList.filter(l => l.nivelRiesgo === 'Medio' || l.nivelRiesgo === 'medio').length;
+            countBajo = learnersList.filter(l => l.nivelRiesgo === 'Bajo' || l.nivelRiesgo === 'bajo').length;
           } catch (learnersErr) {
             console.warn('Error fetching learners for count, fallback to 0', learnersErr);
           }
 
           completeList.push({
-            ...f,
+            id: f.id,
+            codigoFicha: f.codigoFicha,
+            fechaInicio: f.fechaInicio,
+            fechaFin: f.fechaFin,
+            programaId: f.programaId,
+            rolEnFicha: f.rolEnFicha,
+            area: f.area,
             programaFormacion: progResult[0]?.nombre || 'Sin programa',
             nivel: progResult[0]?.nivel || 'Tecnólogo',
-            instructor: insRow.nombre || 'Instructor Responsable',
+            instructor: assignments.map(a => `${a.nombre} (${a.rol}${a.area && a.area !== 'General' ? ' - ' + a.area : ''})`).join(' | ') || 'Sin asignación',
+            assignments: assignments,
+            hasActiveLider,
+            missingTransversals,
             aprendicesCargados: totalLearners > 0,
-            totalAprendices: totalLearners
+            totalAprendices: totalLearners,
+            countAlto,
+            countMedio,
+            countBajo
           });
         }
         return res.json(completeList);
@@ -640,7 +1096,46 @@ async function startServer() {
           const f = memoryDb.fichas.find(fi => fi.id === link.fichaId);
           if (!f) return null;
           const prog = memoryDb.programasFormacion.find(p => p.id === f.programaId);
-          const learnersCount = memoryDb.aprendicesFichas.filter(l => l.fichaId === f.id).length;
+          
+          const learnersList = memoryDb.aprendicesFichas.filter(l => l.fichaId === f.id);
+          const learnersCount = learnersList.length;
+          const countAlto = learnersList.filter(l => l.nivelRiesgo === 'Alto' || l.nivelRiesgo === 'alto').length;
+          const countMedio = learnersList.filter(l => l.nivelRiesgo === 'Medio' || l.nivelRiesgo === 'medio').length;
+          const countBajo = learnersList.filter(l => l.nivelRiesgo === 'Bajo' || l.nivelRiesgo === 'bajo').length;
+          
+          const allFichaLinks = memoryDb.instructorFicha.filter(l => l.fichaId === f.id);
+          const assignments = allFichaLinks.map(l => {
+            const inst = memoryDb.instructores.find(i => i.id === l.instructorId);
+            return {
+              id: inst?.id || 0,
+              nombre: inst?.nombre || 'Instructor',
+              correo: inst?.correo || '',
+              rol: l.rolEnFicha,
+              area: l.area,
+              estado: inst?.estado || 'Activo'
+            };
+          });
+
+          const hasActiveLider = assignments.some(a => 
+            (a.rol.toLowerCase().includes('lider') || a.rol.toLowerCase().includes('líder')) && 
+            a.estado === 'Activo'
+          );
+
+          const transversalAreas = Array.from(new Set(
+            assignments
+              .filter(a => a.rol.toLowerCase().includes('transversal'))
+              .map(a => a.area || 'General')
+          ));
+          
+          const missingTransversals: any[] = [];
+          for (const area of transversalAreas) {
+            const areaAss = assignments.filter(a => (a.area || 'General') === area && a.rol.toLowerCase().includes('transversal'));
+            const hasActiveTrans = areaAss.some(a => a.estado === 'Activo');
+            if (!hasActiveTrans) {
+              missingTransversals.push(area);
+            }
+          }
+
           return {
             id: f.id,
             codigoFicha: f.codigoFicha,
@@ -651,9 +1146,15 @@ async function startServer() {
             area: link.area,
             programaFormacion: prog?.nombre || 'Análisis y Desarrollo de Software (ADSO)',
             nivel: prog?.nivel || 'Tecnólogo',
-            instructor: insRow.nombre || 'Instructor Responsable',
+            instructor: assignments.map(a => `${a.nombre} (${a.rol}${a.area && a.area !== 'General' ? ' - ' + a.area : ''})`).join(' | ') || 'Sin asignación',
+            assignments: assignments,
+            hasActiveLider,
+            missingTransversals,
             aprendicesCargados: learnersCount > 0,
-            totalAprendices: learnersCount
+            totalAprendices: learnersCount,
+            countAlto,
+            countMedio,
+            countBajo
           };
         }).filter(item => item !== null);
         return res.json(completeList);
@@ -661,6 +1162,104 @@ async function startServer() {
     } catch (err: any) {
       console.error('Error in GET /api/fichas:', err);
       return res.status(500).json({ error: 'Error al cargar fichas asociadas' });
+    }
+  });
+
+  // DELETE individual Ficha (requires Administrative access)
+  app.delete('/api/fichas/:id', requireAuth, async (req: AuthRequest, res) => {
+    try {
+      const uid = req.user?.uid || '';
+      const fId = Number(req.params.id);
+      
+      const memIns = memoryDb.instructores.find(i => i.uid === uid);
+      let requester = null;
+      try {
+        const requesterResult = await db.select().from(instructores).where(eq(instructores.uid, uid));
+        requester = requesterResult[0] || memIns;
+      } catch (dbErr: any) {
+        requester = memIns;
+      }
+
+      if (!requester || requester.rol !== 'Administrativo') {
+        return res.status(403).json({ error: 'Acceso denegado: Se requiere rol Administrativo' });
+      }
+
+      // 1. Delete from PostgreSQL
+      let postgresDeleted = false;
+      try {
+        const apps = await db.select().from(aprendicesFichas).where(eq(aprendicesFichas.fichaId, fId));
+        for (const app of apps) {
+          await db.delete(seguimientosHistorico).where(eq(seguimientosHistorico.aprendizFichaId, app.id));
+        }
+        await db.delete(aprendicesFichas).where(eq(aprendicesFichas.fichaId, fId));
+        await db.delete(instructorFicha).where(eq(instructorFicha.fichaId, fId));
+        await db.delete(fichas).where(eq(fichas.id, fId));
+        postgresDeleted = true;
+      } catch (dbErr: any) {
+        console.warn('PostgreSQL individual ficha delete skipped or failed:', dbErr.message);
+      }
+
+      // 2. Delete from Memory DB
+      const appIds = memoryDb.aprendicesFichas.filter(l => l.fichaId === fId).map(l => l.id);
+      memoryDb.seguimientosHistorico = memoryDb.seguimientosHistorico.filter(s => !appIds.includes(s.aprendizFichaId));
+      memoryDb.aprendicesFichas = memoryDb.aprendicesFichas.filter(l => l.fichaId !== fId);
+      memoryDb.instructorFicha = memoryDb.instructorFicha.filter(link => link.fichaId !== fId);
+      memoryDb.fichas = memoryDb.fichas.filter(f => f.id !== fId);
+
+      return res.json({ success: true, message: 'La ficha y todos sus datos relacionados fueron eliminados.' });
+    } catch (err: any) {
+      console.error('Error deleting ficha:', err);
+      return res.status(500).json({ error: 'Error interno al eliminar la ficha' });
+    }
+  });
+
+  // PUT individual Ficha (requires Administrative access)
+  app.put('/api/fichas/:id', requireAuth, async (req: AuthRequest, res) => {
+    try {
+      const uid = req.user?.uid || '';
+      const fId = Number(req.params.id);
+      const { codigoFicha, fechaInicio, fechaFin } = req.body;
+
+      if (!codigoFicha || !fechaInicio || !fechaFin) {
+        return res.status(400).json({ error: 'Faltan campos obligatorios' });
+      }
+
+      const memIns = memoryDb.instructores.find(i => i.uid === uid);
+      let requester = null;
+      try {
+        const requesterResult = await db.select().from(instructores).where(eq(instructores.uid, uid));
+        requester = requesterResult[0] || memIns;
+      } catch (dbErr: any) {
+        requester = memIns;
+      }
+
+      if (!requester || requester.rol !== 'Administrativo') {
+        return res.status(403).json({ error: 'Acceso denegado: Se requiere rol Administrativo' });
+      }
+
+      // 1. Update PostgreSQL
+      let postgresUpdated = false;
+      try {
+        await db.update(fichas)
+          .set({ codigoFicha, fechaInicio, fechaFin })
+          .where(eq(fichas.id, fId));
+        postgresUpdated = true;
+      } catch (dbErr: any) {
+        console.warn('PostgreSQL individual ficha update skipped or failed:', dbErr.message);
+      }
+
+      // 2. Update Memory DB
+      const memF = memoryDb.fichas.find(f => f.id === fId);
+      if (memF) {
+        memF.codigoFicha = codigoFicha;
+        memF.fechaInicio = fechaInicio;
+        memF.fechaFin = fechaFin;
+      }
+
+      return res.json({ success: true, message: 'Ficha actualizada correctamente' });
+    } catch (err: any) {
+      console.error('Error updating ficha:', err);
+      return res.status(500).json({ error: 'Error interno al actualizar la ficha' });
     }
   });
 
@@ -690,7 +1289,7 @@ async function startServer() {
 
       const isLider = (rol: string) => {
         const r = (rol || '').trim().toLowerCase();
-        return r === 'instructor líder' || r === 'instructor lider' || r === 'lider de programa' || r === 'líder de programa';
+        return r.includes('lider') || r.includes('líder');
       };
 
       const isTransversal = (rol: string) => {
