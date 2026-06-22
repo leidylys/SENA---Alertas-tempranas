@@ -1,0 +1,8 @@
+{
+  "name": "Remix: Sistema de Alertas Tempranas - SENA",
+  "description": "Herramienta institucional del SENA para detectar aprendices en riesgo de deserción mediante análisis de archivos Excel del LMS SOFÍA Plus / Blackboard.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
