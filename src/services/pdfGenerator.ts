@@ -91,8 +91,20 @@ export function generarPdfSeguimiento(
   doc.text('RESUMEN DE APRENDICES Y RIESGO', 15, 73);
 
   // Helper counters
-  const totalD = (ap: Aprendiz) => Object.values(ap.evidencias).filter(v => v === 'D').length;
-  const totalNoEntregadas = (ap: Aprendiz) => Object.values(ap.evidencias).filter(v => v === '*').length;
+  const totalD = (ap: Aprendiz) => {
+    if (!ap || !ap.evidencias) return 0;
+    return Object.values(ap.evidencias).filter(v => {
+      const valStr = v && typeof v === 'object' ? (v as any).estado : String(v);
+      return valStr === 'D';
+    }).length;
+  };
+  const totalNoEntregadas = (ap: Aprendiz) => {
+    if (!ap || !ap.evidencias) return 0;
+    return Object.values(ap.evidencias).filter(v => {
+      const valStr = v && typeof v === 'object' ? (v as any).estado : String(v);
+      return valStr === '-' || valStr === '*';
+    }).length;
+  };
 
   const tableRows = listaFiltrada.map(ap => {
     return [
@@ -252,20 +264,33 @@ export function generarPdfIndividual(aprendiz: Aprendiz, fichaInfo: FichaInfo): 
   doc.setFontSize(10.5);
   doc.text('ESTADO DETALLADO DE EVIDENCIAS', 15, 70);
 
-  const totalD = Object.values(aprendiz.evidencias).filter(v => v === 'D').length;
-  const totalNoEntregadas = Object.values(aprendiz.evidencias).filter(v => v === '*').length;
+  const totalD = (() => {
+    if (!aprendiz || !aprendiz.evidencias) return 0;
+    return Object.values(aprendiz.evidencias).filter(v => {
+      const valStr = v && typeof v === 'object' ? (v as any).estado : String(v);
+      return valStr === 'D';
+    }).length;
+  })();
+  const totalNoEntregadas = (() => {
+    if (!aprendiz || !aprendiz.evidencias) return 0;
+    return Object.values(aprendiz.evidencias).filter(v => {
+      const valStr = v && typeof v === 'object' ? (v as any).estado : String(v);
+      return valStr === '-' || valStr === '*';
+    }).length;
+  })();
 
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(9);
   doc.text(`Evidencias calificadas con D (Aprobación deficiente): ${totalD}`, 18, 76);
-  doc.text(`Evidencias sin entrega registrada (*): ${totalNoEntregadas}`, 18, 81);
+  doc.text(`Evidencias sin entrega registrada (-): ${totalNoEntregadas}`, 18, 81);
   doc.text(`Inasistencia o Días sin acceso reportados: ${aprendiz.diasSinAcceso !== null ? `${aprendiz.diasSinAcceso} días` : 'Sin datos'}`, 18, 86);
 
   // Table of all grades
   const gradesRows = Object.entries(aprendiz.evidencias).map(([evName, val]) => {
+    const valStr = val && typeof val === 'object' ? (val as any).estado : String(val);
     let readableVal = 'Aprobada (A)';
-    if (val === 'D') readableVal = 'Desaprobada (D) - REQUIERE ATENCIÓN';
-    if (val === '*') readableVal = 'No entregada (*) - REQUIERE ATENCIÓN';
+    if (valStr === 'D') readableVal = 'Desaprobada (D) - REQUIERE ATENCIÓN';
+    if (valStr === '-' || valStr === '*') readableVal = 'No entregada (-) - REQUIERE ATENCIÓN';
     return [evName, readableVal];
   });
 

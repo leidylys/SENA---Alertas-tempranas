@@ -1,10 +1,10 @@
 import React, { useState, useMemo } from 'react';
 import { 
   Search, ArrowUpDown, ChevronDown, ChevronUp, Briefcase, 
-  Sparkles, CheckSquare, Square, Filter, FileArchive, Download, Eye, Activity
+  Sparkles, CheckSquare, Square, Filter, FileArchive, Download, Eye, Activity, Mail
 } from 'lucide-react';
 import { Aprendiz, FichaInfo } from '../types';
-import { badgeNivel, badgeEstado, rowColorNivel } from '../utils/formatters';
+import { badgeNivel, badgeEstado, rowColorNivel, formatEvidenciaNombre } from '../utils/formatters';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 import { generarPdfIndividual } from '../services/pdfGenerator';
@@ -29,6 +29,7 @@ interface AlertTableProps {
   onToggleSelectAll: (filteredIds: string[]) => void;
   onIntervenirIndividual: (aprendiz: Aprendiz) => void;
   onIntervenirMasivo: (aprendices: Aprendiz[]) => void;
+  onEnviarLlamado: (aprendiz: Aprendiz) => void;
 }
 
 export default function AlertTable({
@@ -48,12 +49,195 @@ export default function AlertTable({
   onToggleSelect,
   onToggleSelectAll,
   onIntervenirIndividual,
-  onIntervenirMasivo
+  onIntervenirMasivo,
+  onEnviarLlamado
 }: AlertTableProps) {
   
   // Track which rows are expanded to see history
   const [expandedDocIds, setExpandedDocIds] = useState<string[]>([]);
   const [zipExporting, setZipExporting] = useState(false);
+  const [selectedLearnerForEvidences, setSelectedLearnerForEvidences] = useState<any>(null);
+  const [modalStateFilter, setModalStateFilter] = useState<'Todas' | 'A' | 'D' | '-'>('Todas');
+
+  // Find all pending evidences for selected learner
+  const pendingEvidencesList = useMemo(() => {
+    if (!selectedLearnerForEvidences) return [];
+    
+    const evs = selectedLearnerForEvidences.evidencias || {};
+    return Object.entries(evs).map(([header, value]) => {
+      let valStr = '';
+      let detail: any = null;
+      if (typeof value === 'object' && value !== null) {
+        valStr = (value as any).estado;
+        detail = value;
+      } else {
+        valStr = String(value);
+      }
+      
+      if (valStr === '-') {
+        if (detail) {
+          return {
+            nombre: detail.nombre || header,
+            codigo: detail.codigo || '',
+            actividadProyecto: detail.actividadProyecto || 'Sin Actividad',
+            fase: detail.fase || 'Fase de Formación',
+            tipo: detail.tipo || 'Evidencia',
+            estado: 'Pendiente'
+          };
+        } else {
+          const norm = header.toLowerCase();
+          let tipo = 'Evidencia';
+          if (norm.includes('prueba') || norm.includes('evaluacion') || norm.includes('cuestionario')) {
+            tipo = 'Prueba de Conocimiento';
+          } else if (norm.includes('foro')) {
+            tipo = 'Foro';
+          }
+          
+          let codigo = header;
+          let act = 'Sin Actividad';
+          const matchCode = header.match(/(GA\d+-[A-Za-z0-9_-]+)/i);
+          if (matchCode) {
+            codigo = matchCode[1].toUpperCase();
+            const actMatch = codigo.match(/^(GA\d+)/i);
+            if (actMatch) {
+              act = actMatch[1].toUpperCase();
+            }
+          } else {
+            const gaMatch = header.match(/(GA\d+)/i);
+            if (gaMatch) {
+              act = gaMatch[1].toUpperCase();
+            }
+          }
+          
+          return {
+            nombre: header,
+            codigo,
+            actividadProyecto: act,
+            fase: 'Fase de Formación',
+            tipo,
+            estado: 'Pendiente'
+          };
+        }
+      }
+      return null;
+    }).filter(Boolean);
+  }, [selectedLearnerForEvidences]);
+
+  // Group the pending list by Fase and Actividad de Proyecto
+  const groupedPendingEvidences = useMemo(() => {
+    const groups: Record<string, Record<string, any[]>> = {};
+    
+    pendingEvidencesList.forEach(ev => {
+      if (!ev) return;
+      const f = ev.fase || 'Fase de Formación';
+      let act = ev.actividadProyecto || 'Sin Actividad';
+      if (/GA(\d+)/i.test(act)) {
+        act = act.replace(/GA(\d+)/gi, 'AP$1');
+      }
+      
+      if (!groups[f]) {
+        groups[f] = {};
+      }
+      if (!groups[f][act]) {
+        groups[f][act] = [];
+      }
+      groups[f][act].push(ev);
+    });
+    
+    return groups;
+  }, [pendingEvidencesList]);
+
+  const modalEvidencesList = useMemo(() => {
+    if (!selectedLearnerForEvidences) return [];
+    
+    const evs = selectedLearnerForEvidences.evidencias || {};
+    return Object.entries(evs).map(([header, value]) => {
+      let valStr = '';
+      let detail: any = null;
+      if (typeof value === 'object' && value !== null) {
+        valStr = (value as any).estado;
+        detail = value;
+      } else {
+        valStr = String(value);
+      }
+      
+      if (detail) {
+        return {
+          nombre: detail.nombre || header,
+          codigo: detail.codigo || '',
+          actividadProyecto: detail.actividadProyecto || 'Sin Actividad',
+          fase: detail.fase || 'Fase de Formación',
+          tipo: detail.tipo || 'Evidencia',
+          estado: valStr
+        };
+      } else {
+        const norm = header.toLowerCase();
+        let tipo = 'Evidencia';
+        if (norm.includes('prueba') || norm.includes('evaluacion') || norm.includes('cuestionario')) {
+          tipo = 'Prueba de Conocimiento';
+        } else if (norm.includes('foro')) {
+          tipo = 'Foro';
+        }
+        
+        let codigo = header;
+        let act = 'Sin Actividad';
+        const matchCode = header.match(/(GA\d+-[A-Za-z0-9_-]+)/i);
+        if (matchCode) {
+          codigo = matchCode[1].toUpperCase();
+          const actMatch = codigo.match(/^(GA\d+)/i);
+          if (actMatch) {
+            act = actMatch[1].toUpperCase();
+          }
+        } else {
+          const gaMatch = header.match(/(GA\d+)/i);
+          if (gaMatch) {
+            act = gaMatch[1].toUpperCase();
+          }
+        }
+        
+        return {
+          nombre: header,
+          codigo,
+          actividadProyecto: act,
+          fase: 'Fase de Formación',
+          tipo,
+          estado: valStr
+        };
+      }
+    });
+  }, [selectedLearnerForEvidences]);
+
+  const filteredModalEvidencesList = useMemo(() => {
+    if (modalStateFilter === 'Todas') {
+      return modalEvidencesList;
+    }
+    return modalEvidencesList.filter(ev => ev.estado === modalStateFilter);
+  }, [modalEvidencesList, modalStateFilter]);
+
+  // Group the filtered list by Fase and Actividad de Proyecto (using AP nomenclature for grouping / visual)
+  const groupedModalEvidences = useMemo(() => {
+    const groups: Record<string, Record<string, any[]>> = {};
+    
+    filteredModalEvidencesList.forEach(ev => {
+      if (!ev) return;
+      const f = ev.fase || 'Fase de Formación';
+      
+      let actFormatted = ev.actividadProyecto || 'Sin Actividad';
+      if (/GA(\d+)/i.test(actFormatted)) {
+        actFormatted = actFormatted.replace(/GA(\d+)/gi, 'AP$1');
+      }
+      
+      if (!groups[f]) {
+        groups[f] = {};
+      }
+      if (!groups[f][actFormatted]) {
+        groups[f][actFormatted] = [];
+      }
+      groups[f][actFormatted].push(ev);
+    });
+    
+    return groups;
+  }, [filteredModalEvidencesList]);
 
   const toggleRowExpand = (id: string) => {
     setExpandedDocIds(prev =>
@@ -62,29 +246,55 @@ export default function AlertTable({
   };
 
   // Helper getters for metrics
-  const getDCount = (ap: Aprendiz) => Object.values(ap.evidencias).filter(v => v === 'D').length;
-  const getNoEntregasCount = (ap: Aprendiz) => Object.values(ap.evidencias).filter(v => v === '*').length;
+  const getDCount = (ap: Aprendiz) => {
+    if (!ap || !ap.evidencias) return 0;
+    return Object.values(ap.evidencias).filter(v => {
+      const valStr = v && typeof v === 'object' ? (v as any).estado : String(v);
+      return valStr === 'D';
+    }).length;
+  };
+
+  const getNoEntregasCount = (ap: Aprendiz) => {
+    if (!ap || !ap.evidencias) return 0;
+    return Object.values(ap.evidencias).filter(v => {
+      const valStr = v && typeof v === 'object' ? (v as any).estado : String(v);
+      return valStr === '-';
+    }).length;
+  };
+
+  const getACount = (ap: Aprendiz) => {
+    if (!ap || !ap.evidencias) return 0;
+    return Object.values(ap.evidencias).filter(v => {
+      const valStr = v && typeof v === 'object' ? (v as any).estado : String(v);
+      return valStr === 'A';
+    }).length;
+  };
+
+  const getTotalCount = (ap: Aprendiz) => {
+    if (!ap || !ap.evidencias) return 0;
+    return Object.keys(ap.evidencias).length;
+  };
 
   // Filter and sort learners
   const processedAprendices = useMemo(() => {
-    let list = [...aprendices];
+    let list = [...aprendices].filter(Boolean);
 
     // 1. Search Query (name or document)
     if (filterSearch.trim()) {
       const q = filterSearch.toLowerCase().trim();
       list = list.filter(
-        ap => ap.nombre.toLowerCase().includes(q) || ap.documento.includes(q)
+        ap => (ap.nombre || '').toLowerCase().includes(q) || (ap.documento || '').includes(q)
       );
     }
 
     // 2. Risk Card Filter
     if (filterRiesgo !== 'Todos') {
-      list = list.filter(ap => ap.nivelRiesgo === filterRiesgo);
+      list = list.filter(ap => (ap.nivelRiesgo || 'Bajo') === filterRiesgo);
     }
 
     // 3. Intervention State Dropdown Filter
     if (filterEstado !== 'Todos') {
-      list = list.filter(ap => ap.estadoIntervencion === filterEstado);
+      list = list.filter(ap => (ap.estadoIntervencion || 'Sin intervención') === filterEstado);
     }
 
     // 4. Sorting logic
@@ -100,6 +310,12 @@ export default function AlertTable({
         } else if (sortColumn === 'no_entregadas') {
           valA = getNoEntregasCount(a);
           valB = getNoEntregasCount(b);
+        } else if (sortColumn === 'evidencias_a') {
+          valA = getACount(a);
+          valB = getACount(b);
+        } else if (sortColumn === 'total_evidencias') {
+          valA = getTotalCount(a);
+          valB = getTotalCount(b);
         }
 
         // Handle string comparison with localeCompare
@@ -262,21 +478,33 @@ export default function AlertTable({
                   <ArrowUpDown className="w-3.5 h-3.5 shrink-0 text-slate-400" />
                 </div>
               </th>
-              <th onClick={() => handleSort('evidencias_d')} className="py-4 px-3 cursor-pointer hover:bg-slate-100/50 transition-colors text-center w-24" title="Evidencias en rojo">
+              <th onClick={() => handleSort('total_evidencias')} className="py-4 px-2 cursor-pointer hover:bg-slate-100/50 transition-colors text-center w-24 font-black" title="Total de evidencias del aprendiz">
                 <div className="flex items-center justify-center gap-1.5">
-                  <span>Evid. D</span>
+                  <span>Evid. Totales</span>
                   <ArrowUpDown className="w-3.5 h-3.5 shrink-0 text-slate-400" />
                 </div>
               </th>
-              <th onClick={() => handleSort('no_entregadas')} className="py-4 px-3 cursor-pointer hover:bg-slate-100/50 transition-colors text-center w-28" title="No entregó (*)">
+              <th onClick={() => handleSort('evidencias_a')} className="py-4 px-2 cursor-pointer hover:bg-slate-100/50 transition-colors text-center w-24 font-black" title="Evidencias aprobadas (A)">
                 <div className="flex items-center justify-center gap-1.5">
-                  <span>No Entregada</span>
+                  <span>Aprobadas (A)</span>
                   <ArrowUpDown className="w-3.5 h-3.5 shrink-0 text-slate-400" />
                 </div>
               </th>
-              <th onClick={() => handleSort('diasSinAcceso')} className="py-4 px-3 cursor-pointer hover:bg-slate-100/50 transition-colors w-28">
+              <th onClick={() => handleSort('evidencias_d')} className="py-4 px-2 cursor-pointer hover:bg-slate-100/50 transition-colors text-center w-24 font-black" title="Evidencias desaprobadas (D)">
+                <div className="flex items-center justify-center gap-1.5">
+                  <span>Desaprobadas (D)</span>
+                  <ArrowUpDown className="w-3.5 h-3.5 shrink-0 text-slate-400" />
+                </div>
+              </th>
+              <th onClick={() => handleSort('no_entregadas')} className="py-4 px-2 cursor-pointer hover:bg-slate-100/50 transition-colors text-center w-28 font-black" title="Evidencias pendientes (-)">
+                <div className="flex items-center justify-center gap-1.5">
+                  <span>Pendientes (-)</span>
+                  <ArrowUpDown className="w-3.5 h-3.5 shrink-0 text-slate-400" />
+                </div>
+              </th>
+              <th onClick={() => handleSort('diasSinAcceso')} className="py-4 px-3 cursor-pointer hover:bg-slate-100/50 transition-colors w-32" title="Información de acceso y riesgo de inasistencia">
                 <div className="flex items-center gap-1.5">
-                  <span>Sin Acceso</span>
+                  <span>Inasistencia / Acceso</span>
                   <ArrowUpDown className="w-3.5 h-3.5 shrink-0 text-slate-400" />
                 </div>
               </th>
@@ -292,13 +520,13 @@ export default function AlertTable({
                   <ArrowUpDown className="w-3.5 h-3.5 shrink-0 text-slate-400" />
                 </div>
               </th>
-              <th className="py-4 px-4 text-center w-32">Acción</th>
+              <th className="py-4 px-4 text-center w-32 font-black">Acción</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100 text-xs">
             {processedAprendices.length === 0 ? (
               <tr>
-                <td colSpan={9} className="py-16 text-center text-slate-400 font-medium italic bg-white">
+                <td colSpan={11} className="py-16 text-center text-slate-400 font-medium italic bg-white">
                   No se encontraron aprendices con los filtros seleccionados.
                 </td>
               </tr>
@@ -334,40 +562,95 @@ export default function AlertTable({
                         </div>
                       </td>
                       <td className="py-3 px-4 font-medium text-slate-600">{ap.documento}</td>
-                      <td className="py-3 px-3 text-center">
-                        <span className={`px-2 py-0.5 rounded-full font-bold ${getDCount(ap) > 0 ? 'bg-red-50 text-red-650' : 'bg-slate-50 text-slate-400'}`}>
-                          {getDCount(ap)}
-                        </span>
+                      <td className="py-3 px-2 text-center text-slate-600 font-semibold">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setModalStateFilter('Todas');
+                            setSelectedLearnerForEvidences(ap);
+                          }}
+                          className="px-2 py-0.5 rounded-md font-bold text-slate-600 hover:bg-slate-100 transition-all cursor-pointer"
+                        >
+                          {getTotalCount(ap)}
+                        </button>
                       </td>
-                      <td className="py-3 px-3 text-center">
-                        <span className={`px-2 py-0.5 rounded-full font-bold ${getNoEntregasCount(ap) > 0 ? 'bg-amber-50 text-amber-700' : 'bg-slate-50 text-slate-400'}`}>
+                      <td className="py-3 px-2 text-center">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setModalStateFilter('A');
+                            setSelectedLearnerForEvidences(ap);
+                          }}
+                          className={`px-2.5 py-0.5 rounded-full font-bold transition-all ${getACount(ap) > 0 ? 'bg-emerald-55 text-[#007832] hover:bg-emerald-100 hover:scale-105 cursor-pointer shadow-3xs' : 'bg-slate-50 text-slate-400 cursor-default'}`}
+                        >
+                          {getACount(ap)}
+                        </button>
+                      </td>
+                      <td className="py-3 px-2 text-center">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setModalStateFilter('D');
+                            setSelectedLearnerForEvidences(ap);
+                          }}
+                          className={`px-2.5 py-0.5 rounded-full font-bold transition-all ${getDCount(ap) > 0 ? 'bg-red-50 text-red-650 hover:bg-red-100 hover:scale-105 cursor-pointer shadow-3xs' : 'bg-slate-50 text-slate-400 cursor-default'}`}
+                        >
+                          {getDCount(ap)}
+                        </button>
+                      </td>
+                      <td className="py-3 px-2 text-center">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setModalStateFilter('-');
+                            setSelectedLearnerForEvidences(ap);
+                          }}
+                          className={`px-2.5 py-0.5 rounded-full font-bold transition-all ${getNoEntregasCount(ap) > 0 ? 'bg-amber-50 text-amber-700 hover:bg-amber-100 hover:scale-105 border border-amber-250 cursor-pointer shadow-3xs' : 'bg-slate-50 text-slate-400'}`}
+                          title={getNoEntregasCount(ap) > 0 ? "Ver detalle de evidencias académicas pendientes" : "Sin evidencias pendientes"}
+                        >
                           {getNoEntregasCount(ap)}
-                        </span>
+                        </button>
                       </td>
                       <td className="py-3 px-3">
-                        {ap.diasSinAcceso !== null ? (
-                          <div className="flex flex-col">
-                            <span className={`font-semibold ${ap.diasSinAcceso >= 14 ? 'text-red-600' : ap.diasSinAcceso >= 7 ? 'text-amber-650' : 'text-slate-600'}`}>
-                              {ap.diasSinAcceso} días
+                        {ap.diasSinAcceso !== null && ap.diasSinAcceso !== undefined ? (
+                          <div className="flex flex-col space-y-0.5">
+                            <span className={`font-semibold ${ap.diasSinAcceso > 15 ? 'text-red-600' : ap.diasSinAcceso >= 8 ? 'text-amber-650' : 'text-slate-600'}`}>
+                              {ap.diasSinAcceso} días sin acceso
                             </span>
-                            <span className="text-[10px] text-slate-400 italic">Lms: {ap.ultimoAcceso}</span>
+                            <span className="text-[10px] text-slate-500 font-medium">
+                              Último: {ap.ultimoAcceso || 'Sin datos'}
+                            </span>
+                            <span className={`text-[9px] px-1.5 py-0.5 rounded font-extrabold w-fit uppercase ${
+                              ap.diasSinAcceso > 15 
+                                ? 'bg-red-50 text-red-700 border border-red-200' 
+                                : ap.diasSinAcceso >= 8 
+                                ? 'bg-amber-50 text-amber-700 border border-amber-200' 
+                                : 'bg-emerald-50 text-emerald-750 border border-emerald-200'
+                            }`}>
+                              Riesgo: {ap.diasSinAcceso > 15 ? 'Alto' : ap.diasSinAcceso >= 8 ? 'Medio' : 'Bajo'}
+                            </span>
                           </div>
                         ) : (
-                          <span className="text-slate-400 italic">Sin datos</span>
+                          <div className="flex flex-col space-y-0.5">
+                            <span className="text-slate-400 italic text-xs">Sin datos de acceso</span>
+                            <span className="text-[9px] px-1.5 py-0.5 rounded font-extrabold w-fit uppercase bg-slate-50 text-slate-400 border border-slate-200">
+                              Sin datos
+                            </span>
+                          </div>
                         )}
                       </td>
                       <td className="py-3 px-4">{badgeNivel(ap.nivelRiesgo)}</td>
                       <td className="py-3 px-4">
                         <div className="flex items-center gap-1.5">
                           {badgeEstado(ap.estadoIntervencion)}
-                          {ap.historialIntervenciones.length > 0 && (
+                          {(ap.historialIntervenciones || []).length > 0 && (
                             <button
                               type="button"
                               onClick={() => toggleRowExpand(ap.documento)}
                               className="text-[10.5px] text-slate-400 hover:text-sena-600 flex items-center justify-between"
                               title="Ver historial de intervenciones"
                             >
-                              ({ap.historialIntervenciones.length})
+                              ({(ap.historialIntervenciones || []).length})
                             </button>
                           )}
                         </div>
@@ -381,6 +664,17 @@ export default function AlertTable({
                             className="bg-sena-50 hover:bg-sena-100 text-sena-800 text-xs py-1.5 px-3 rounded-md font-bold transition-all border border-sena-100 shrink-0"
                           >
                             Intervenir
+                          </button>
+
+                          {/* Enviar llamado to prompt compliance */}
+                          <button
+                            type="button"
+                            onClick={() => onEnviarLlamado(ap)}
+                            className="bg-red-50 hover:bg-red-100 text-red-700 hover:text-red-800 text-xs py-1.5 px-3 rounded-md font-bold transition-all border border-red-100 shrink-0 flex items-center gap-1"
+                            title="Enviar correo formal de llamado de atención"
+                          >
+                            <Mail className="w-3.5 h-3.5" />
+                            Enviar llamado
                           </button>
                           
                           {/* Chevron expand for historic timeline */}
@@ -399,55 +693,73 @@ export default function AlertTable({
                     {/* Historical Logs Expandible Subrow */}
                     {isExpanded && (
                       <tr className="bg-slate-50/60 transition-all">
-                        <td colSpan={9} className="py-3.5 px-6 border-l-4 border-l-slate-400">
+                        <td colSpan={11} className="py-3.5 px-6 border-l-4 border-l-slate-400">
                           <div className="space-y-3">
                             <h5 className="font-bold text-slate-800 uppercase tracking-wider text-[10px] flex items-center gap-1">
                               <Activity className="w-3.5 h-3.5 text-sena-600" />
                               Historial de Intervenciones y Compromisos del Aprendiz
                             </h5>
                             
-                            {ap.historialIntervenciones.length === 0 ? (
+                            {(!ap.historialIntervenciones || ap.historialIntervenciones.length === 0) ? (
                               <p className="text-xs text-slate-400 italic">No hay intervenciones registradas aún. Haz clic en "Intervenir" para registrar la primera.</p>
                             ) : (
                               <div className="relative border-l border-slate-200 pl-4 ml-1 space-y-4">
-                                {ap.historialIntervenciones.map(hist => (
-                                  <div key={hist.id} className="relative text-xs">
-                                    {/* Timeline dot marker */}
-                                    <div className="absolute -left-[20.5px] top-1 w-2.5 h-2.5 rounded-full bg-sena-600 border border-white"></div>
-                                    
-                                    <div className="p-3 bg-white rounded-lg border border-slate-150 shadow-xs space-y-1">
-                                      <div className="flex items-center justify-between text-slate-400 font-medium text-[10px]">
-                                        <span>Fecha: <strong className="text-slate-600">{hist.fecha}</strong></span>
-                                        <span>Instructor: <strong className="text-slate-600">{hist.instructor}</strong></span>
-                                        <span className="text-sena-700 font-bold bg-sena-50 px-1.5 py-0.2 rounded-sm border border-sena-100">{hist.estadoIntervencion}</span>
-                                      </div>
+                                {ap.historialIntervenciones.map(hist => {
+                                  const isLlamado = hist.tipoSeguimiento === 'Correo de llamado a ponerse al día' || hist.numeroLlamado !== undefined;
+                                  return (
+                                    <div key={hist.id} className="relative text-xs">
+                                      {/* Timeline dot marker */}
+                                      <div className={`absolute -left-[20.5px] top-1.5 w-2.5 h-2.5 rounded-full ${isLlamado ? 'bg-red-500' : 'bg-sena-600'} border border-white`}></div>
                                       
-                                      {hist.estrategias.length > 0 && (
-                                        <div className="pt-1.5">
-                                          <span className="font-bold text-slate-600">Estrategias:</span>{' '}
-                                          <span className="text-slate-700 text-[11px] bg-slate-50 px-1.5 py-0.5 rounded-sm border border-slate-100">
-                                            {hist.estrategias.join(', ')}
+                                      <div className={`p-3 bg-white rounded-lg border ${isLlamado ? 'border-red-100 bg-red-50/5' : 'border-slate-150'} shadow-xs space-y-1`}>
+                                        <div className="flex items-center justify-between text-slate-400 font-medium text-[10px]">
+                                          <span>Fecha: <strong className="text-slate-600">{hist.fecha}</strong></span>
+                                          <span>Instructor: <strong className="text-slate-600">{hist.instructor}</strong></span>
+                                          <span className={`${isLlamado ? 'text-red-700 bg-red-50 border-red-100' : 'text-sena-700 bg-sena-50 border-sena-100'} font-bold px-1.5 py-0.2 rounded-sm border`}>
+                                            {isLlamado ? `Llamado #${hist.numeroLlamado || 1}` : (hist.estadoIntervencion || hist.nuevo || 'Intervenido')}
                                           </span>
                                         </div>
-                                      )}
+                                        
+                                        {isLlamado ? (
+                                          <div className="pt-1 space-y-1">
+                                            <p className="text-slate-700 font-bold text-[11.5px] text-red-600">
+                                              Llamado #{hist.numeroLlamado || 1} enviado - {hist.evidenciasPendientes || 0} evidencias pendientes
+                                            </p>
+                                            <div className="text-slate-600 text-[11px] bg-red-50/20 p-2 rounded border border-red-100/10 whitespace-pre-line font-mono max-h-40 overflow-y-auto">
+                                              {hist.detalle || hist.observaciones}
+                                            </div>
+                                          </div>
+                                        ) : (
+                                          <>
+                                            {hist.estrategias && hist.estrategias.length > 0 && (
+                                              <div className="pt-1.5">
+                                                <span className="font-bold text-slate-600">Estrategias:</span>{' '}
+                                                <span className="text-slate-700 text-[11px] bg-slate-50 px-1.5 py-0.5 rounded-sm border border-slate-100">
+                                                  {hist.estrategias.join(', ')}
+                                                </span>
+                                              </div>
+                                            )}
 
-                                      {hist.causas.length > 0 && (
-                                        <div className="pt-1">
-                                          <span className="font-bold text-slate-600">Causas evaluadas:</span>{' '}
-                                          <span className="text-amber-800 text-[11.5px]">
-                                            {hist.causas.join(', ')}
-                                          </span>
-                                        </div>
-                                      )}
+                                            {hist.causas && hist.causas.length > 0 && (
+                                              <div className="pt-1">
+                                                <span className="font-bold text-slate-600">Causas evaluadas:</span>{' '}
+                                                <span className="text-amber-800 text-[11.5px]">
+                                                  {hist.causas.join(', ')}
+                                                </span>
+                                              </div>
+                                            )}
 
-                                      {hist.observaciones && (
-                                        <div className="pt-2 text-slate-600 italic border-t border-slate-100/60 mt-1">
-                                          "{hist.observaciones}"
-                                        </div>
-                                      )}
+                                            {(hist.observaciones || hist.detalle) && (
+                                              <div className="pt-2 text-slate-600 italic border-t border-slate-100/60 mt-1">
+                                                "{hist.observaciones || hist.detalle}"
+                                              </div>
+                                            )}
+                                          </>
+                                        )}
+                                      </div>
                                     </div>
-                                  </div>
-                                ))}
+                                  );
+                                })}
                               </div>
                             )}
                           </div>
@@ -503,6 +815,211 @@ export default function AlertTable({
               )}
             </button>
 
+          </div>
+        </div>
+      )}
+
+      {/* Modal de Evidencias Pendientes */}
+      {selectedLearnerForEvidences && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-2xl border border-slate-300 max-w-2xl w-full max-h-[85vh] flex flex-col text-left">
+            {/* Header */}
+            <div className="p-5 border-b border-slate-200 flex items-center justify-between bg-[#39A900]/5 rounded-t-xl">
+              <div className="space-y-1">
+                <h3 className="text-sm font-black text-slate-800 uppercase tracking-wide">
+                  Análisis y Reporte de Evidencias
+                </h3>
+                <p className="text-xs text-slate-600 font-semibold">
+                  {selectedLearnerForEvidences.nombre} ({selectedLearnerForEvidences.tipoDocumento || 'CC'}: {selectedLearnerForEvidences.documento})
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedLearnerForEvidences(null)}
+                className="text-slate-400 hover:text-slate-600 p-1.5 hover:bg-slate-100 rounded-lg transition-colors font-bold text-sm cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Scrollable Body */}
+            <div className="p-5 overflow-y-auto space-y-6">
+              {/* Resumen General Metrics Dashboard */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-slate-50 p-4 rounded-xl border border-slate-200">
+                <button
+                  type="button"
+                  onClick={() => setModalStateFilter('Todas')}
+                  className={`w-full text-center p-3 rounded-lg border transition-all duration-200 cursor-pointer focus:outline-none ${
+                    modalStateFilter === 'Todas'
+                      ? 'bg-slate-100 border-slate-400 text-slate-900 ring-2 ring-slate-450/20 scale-[1.03] shadow-md'
+                      : 'bg-white border-slate-150 text-slate-750 hover:border-slate-350 hover:bg-slate-50/50 hover:scale-[1.01]'
+                  }`}
+                >
+                  <div className={`text-[10px] uppercase font-black tracking-wider ${modalStateFilter === 'Todas' ? 'text-slate-800' : 'text-slate-500'}`}>Total Evidencias</div>
+                  <div className="text-lg font-black tracking-tight mt-1">{getTotalCount(selectedLearnerForEvidences)}</div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setModalStateFilter('A')}
+                  className={`w-full text-center p-3 rounded-lg border transition-all duration-200 cursor-pointer focus:outline-none ${
+                    modalStateFilter === 'A'
+                      ? 'bg-emerald-50 border-emerald-500 text-[#007832] ring-2 ring-emerald-500/20 scale-[1.03] shadow-md'
+                      : 'bg-white border-slate-150 text-slate-750 hover:border-emerald-300 hover:bg-emerald-50/10 hover:scale-[1.01]'
+                  }`}
+                >
+                  <div className={`text-[10px] uppercase font-black tracking-wider ${modalStateFilter === 'A' ? 'text-[#007832]' : 'text-slate-500'}`}>Aprobadas (A)</div>
+                  <div className="text-lg font-black tracking-tight mt-1">{getACount(selectedLearnerForEvidences)}</div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setModalStateFilter('D')}
+                  className={`w-full text-center p-3 rounded-lg border transition-all duration-200 cursor-pointer focus:outline-none ${
+                    modalStateFilter === 'D'
+                      ? 'bg-rose-50 border-rose-500 text-rose-800 ring-2 ring-rose-500/20 scale-[1.03] shadow-md'
+                      : 'bg-white border-slate-150 text-slate-750 hover:border-rose-300 hover:bg-rose-50/10 hover:scale-[1.01]'
+                  }`}
+                >
+                  <div className={`text-[10px] uppercase font-black tracking-wider ${modalStateFilter === 'D' ? 'text-rose-750' : 'text-slate-500'}`}>Desaprobadas (D)</div>
+                  <div className="text-lg font-black tracking-tight mt-1">{getDCount(selectedLearnerForEvidences)}</div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setModalStateFilter('-')}
+                  className={`w-full text-center p-3 rounded-lg border transition-all duration-200 cursor-pointer focus:outline-none ${
+                    modalStateFilter === '-'
+                      ? 'bg-amber-50 border-amber-500 text-amber-800 ring-2 ring-amber-500/20 scale-[1.03] shadow-md'
+                      : 'bg-white border-slate-150 text-slate-750 hover:border-amber-300 hover:bg-amber-50/10 hover:scale-[1.01]'
+                  }`}
+                >
+                  <div className={`text-[10px] uppercase font-black tracking-wider ${modalStateFilter === '-' ? 'text-amber-800' : 'text-slate-500'}`}>Pendientes (-)</div>
+                  <div className="text-lg font-black tracking-tight mt-1">{getNoEntregasCount(selectedLearnerForEvidences)}</div>
+                </button>
+              </div>
+
+              {/* Filtros por Estado */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200 pb-4" id="modal-filter-segment">
+                <div className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
+                  <span>Filtrar evidencias de este aprendiz:</span>
+                  <span className={`px-2 py-0.5 rounded-full font-black text-[9.5px] tracking-wide ${
+                    modalStateFilter === 'Todas' ? 'bg-slate-100 text-slate-700' :
+                    modalStateFilter === 'A' ? 'bg-emerald-50 text-[#007832]' :
+                    modalStateFilter === 'D' ? 'bg-rose-50 text-rose-700' :
+                    'bg-amber-50 text-amber-700'
+                  }`}>
+                    {modalStateFilter === 'Todas' ? 'Todas las evidencias' :
+                     modalStateFilter === 'A' ? 'Solo Aprobadas (A)' :
+                     modalStateFilter === 'D' ? 'Solo Desaprobadas (D)' :
+                     'Solo Pendientes (-)'}
+                  </span>
+                </div>
+              </div>
+
+              {filteredModalEvidencesList.length === 0 ? (
+                <div className="py-12 text-center text-slate-400 font-medium italic">
+                  No se encontraron evidencias de este aprendiz con el estado seleccionado.
+                </div>
+              ) : (
+                Object.entries(groupedModalEvidences).map(([fase, actividades]) => {
+                  // Phase Totalization based on the unfiltered raw set to be always mathematically correct
+                  const allPhaseEvsOfLearner = modalEvidencesList.filter(ev => ev.fase === fase);
+                  const totalEvFase = allPhaseEvsOfLearner.length;
+                  const aprobadasFase = allPhaseEvsOfLearner.filter(ev => ev.estado === 'A').length;
+                  const desaprobadasFase = allPhaseEvsOfLearner.filter(ev => ev.estado === 'D').length;
+                  const pendientesFase = allPhaseEvsOfLearner.filter(ev => ev.estado === '-').length;
+
+                  return (
+                    <div key={fase} className="space-y-3">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-emerald-100 pb-2">
+                        <h4 className="text-xs font-black text-[#007832] flex items-center gap-1.5 uppercase tracking-wide">
+                          <span className="w-1.5 h-3.5 bg-[#39A900] rounded-xs"></span>
+                          {fase}
+                        </h4>
+                        <div className="flex flex-wrap gap-1.5 text-[9px] font-bold">
+                          <span className="bg-slate-100 text-slate-700 px-2 py-0.5 rounded-md border border-slate-200">
+                            Evidencias: {totalEvFase}
+                          </span>
+                          <span className="bg-emerald-50 text-[#007832] px-2 py-0.5 rounded-md border border-emerald-200">
+                            Aprobadas: {aprobadasFase}
+                          </span>
+                          <span className="bg-rose-50 text-rose-700 px-2 py-0.5 rounded-md border border-rose-200">
+                            Desaprobadas: {desaprobadasFase}
+                          </span>
+                          <span className="bg-amber-50 text-amber-700 px-2 py-0.5 rounded-md border border-amber-200">
+                            Pendientes: {pendientesFase}
+                          </span>
+                        </div>
+                      </div>
+                      
+                      <div className="space-y-4 pl-3">
+                        {Object.entries(actividades).map(([actividad, evidencias]) => (
+                          <div key={actividad} className="space-y-2">
+                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 bg-slate-100/70 py-1.5 px-3 rounded-lg border border-slate-200">
+                              <h5 className="text-[10.5px] font-bold text-slate-700">
+                                Actividad de Proyecto: {actividad}
+                              </h5>
+                              <span className="text-[9.5px] font-black uppercase text-slate-500 bg-white px-2 py-0.2 rounded border border-slate-200">
+                                Mostrando: {evidencias.length}
+                              </span>
+                            </div>
+                            
+                            <div className="space-y-1.5">
+                              {evidencias.map((ev: any, idx) => (
+                                <div
+                                  key={idx}
+                                  className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 p-2.5 bg-slate-50 border border-slate-150 rounded-lg hover:border-slate-250 hover:bg-slate-100/50 transition-colors"
+                                >
+                                  <div className="space-y-0.5 max-w-md">
+                                    <div className="text-xs font-semibold text-slate-800 leading-tight">
+                                      {formatEvidenciaNombre(ev.nombre)}
+                                    </div>
+                                    <div className="text-[10px] text-slate-400 font-mono">
+                                      Código: {ev.codigo || 'S/C'}
+                                    </div>
+                                  </div>
+                                  
+                                  <div className="flex items-center gap-2 self-start sm:self-center">
+                                    <span className="text-[9px] font-black uppercase tracking-wide px-2 py-0.5 rounded bg-amber-100 text-amber-850 border border-amber-200">
+                                      {ev.tipo}
+                                    </span>
+                                    {ev.estado === 'A' ? (
+                                      <span className="text-[9px] font-black uppercase tracking-wide px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-150">
+                                        Aprobada (A)
+                                      </span>
+                                    ) : ev.estado === 'D' ? (
+                                      <span className="text-[9px] font-black uppercase tracking-wide px-2 py-0.5 rounded bg-rose-50 text-rose-700 border border-rose-150">
+                                        Desaprobada (D)
+                                      </span>
+                                    ) : (
+                                      <span className="text-[9px] font-black uppercase tracking-wide px-2 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-150">
+                                        Pendiente (-)
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="p-4 border-t border-slate-200 bg-slate-50 flex justify-end rounded-b-xl">
+              <button
+                type="button"
+                onClick={() => setSelectedLearnerForEvidences(null)}
+                className="bg-slate-800 hover:bg-slate-900 text-white text-xs font-bold py-2 px-4 rounded-lg transition-colors border border-slate-900 cursor-pointer"
+              >
+                Cerrar Detalle
+              </button>
+            </div>
           </div>
         </div>
       )}

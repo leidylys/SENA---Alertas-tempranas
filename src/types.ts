@@ -15,10 +15,17 @@ export interface Intervencion {
   fecha: string;
   instructor: string;
   estadoIntervencion: 'Sin intervención' | 'En seguimiento' | 'Intervenido';
-  estrategias: string[];
-  causas: string[];
-  estrategiaPersonalizada: string;
-  observaciones: string;
+  estrategias?: string[];
+  causas?: string[];
+  estrategiaPersonalizada?: string;
+  observaciones?: string;
+  detalle?: string;
+  previo?: string;
+  nuevo?: string;
+  tipoSeguimiento?: string | null;
+  evidenciasPendientes?: number | null;
+  diasSinAcceso?: number | null;
+  numeroLlamado?: number | null;
 }
 
 export interface Aprendiz {
@@ -26,7 +33,7 @@ export interface Aprendiz {
   nombre: string;
   documento: string;
   correo: string;
-  telefono?: string;
+  telefono?: string | null;
   evidencias: Record<string, string>; // e.g. "Evidencia 1": "A" | "D" | "*"
   ultimoAcceso: string | null;     // Date string or text
   diasSinAcceso: number | null;    // calculated days since last access
@@ -34,6 +41,11 @@ export interface Aprendiz {
   nivelRiesgo: 'Bajo' | 'Medio' | 'Alto';
   estadoIntervencion: 'Sin intervención' | 'En seguimiento' | 'Intervenido';
   historialIntervenciones: Intervencion[];
+  resumenFases?: Record<string, any>;
+  estadoAprendiz?: 'Activo' | 'Inactivo';
+  observacionEstado?: string | null;
+  fechaUltimoReporte?: string | null;
+  dbId?: number;
 }
 
 export interface Evidencia {

@@ -17,10 +17,15 @@ export function useAlertasStore() {
 
   // Load new spreadsheet data
   const setDatosCargados = useCallback((nuevosAprendices: Aprendiz[], nuevasFases: Fase[]) => {
+    // Ensure each learner has an initialized historialIntervenciones array
+    const safeLearners = (nuevosAprendices || []).map(ap => ({
+      ...ap,
+      historialIntervenciones: ap.historialIntervenciones || []
+    }));
     // Recalculate using active phases at start
-    const calculados = procesarTodosLosAprendices(nuevosAprendices, nuevasFases);
+    const calculados = procesarTodosLosAprendices(safeLearners, nuevasFases);
     setAprendices(calculados);
-    setFases(nuevasFases);
+    setFases(nuevasFases || []);
     setHasPendingChanges(false);
     setSelectedAprendicesIds([]);
     // Reset filters
@@ -99,7 +104,7 @@ export function useAlertasStore() {
           return {
             ...ap,
             estadoIntervencion: estadoId,
-            historialIntervenciones: [nuevaIntervencion, ...ap.historialIntervenciones]
+            historialIntervenciones: [nuevaIntervencion, ...(ap.historialIntervenciones || [])]
           };
         }
         return ap;
@@ -123,7 +128,7 @@ export function useAlertasStore() {
           return {
             ...ap,
             estadoIntervencion: estadoId,
-            historialIntervenciones: [nuevaIntervencion, ...ap.historialIntervenciones]
+            historialIntervenciones: [nuevaIntervencion, ...(ap.historialIntervenciones || [])]
           };
         }
         return ap;

@@ -4,8 +4,9 @@ import { Aprendiz, Fase, Evidencia } from '../types';
 /**
  * Normalizes text to easily find names or documents despite case/accents.
  */
-function normalizeKey(key: string): string {
-  return key
+function normalizeKey(key: any): string {
+  if (!key) return '';
+  return String(key)
     .toLowerCase()
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '') // remove accents
@@ -60,8 +61,57 @@ export function getNombre(row: any): string {
   if (softNameKey && row[softNameKey]) {
     return String(row[softNameKey]).trim();
   }
-
   return 'Aprendiz sin nombre';
+}
+
+/**
+ * Extracts and separates document and document type from "Nombre de usuario".
+ */
+export function parseNombreUsuario(usernameStr: string): { documento: string, tipoDoc: string } | null {
+  if (!usernameStr) return null;
+  const cleaned = usernameStr.trim().toLowerCase();
+  // Match prefix of digits, followed by alphabetical document types (e.g., cc, ti, ce, pep, etc.)
+  const match = cleaned.match(/^(\d+)([a-z]+)$/);
+  if (match) {
+    return {
+      documento: match[1],
+      tipoDoc: match[2].toUpperCase()
+    };
+  }
+  if (/^\d+$/.test(cleaned)) {
+    return {
+      documento: cleaned,
+      tipoDoc: 'CC'
+    };
+  }
+  return null;
+}
+
+/**
+ * Extracts the document type.
+ */
+export function getTipoDocumento(row: any): string {
+  const keys = Object.keys(row);
+  const usernameKey = keys.find(key => {
+    const norm = normalizeKey(key);
+    return norm === 'nombre de usuario' || norm === 'usuario' || norm === 'username' || norm === 'nombre_usuario';
+  });
+  if (usernameKey && row[usernameKey]) {
+    const parsed = parseNombreUsuario(String(row[usernameKey]));
+    if (parsed) {
+      return parsed.tipoDoc;
+    }
+  }
+
+  const tipoKey = keys.find(key => {
+    const norm = normalizeKey(key);
+    return norm.includes('tipo') && (norm.includes('doc') || norm.includes('identi') || norm.includes('clase') || norm.includes('type'));
+  });
+  if (tipoKey && row[tipoKey]) {
+    return String(row[tipoKey]).trim().toUpperCase();
+  }
+
+  return 'CC';
 }
 
 /**
@@ -69,6 +119,18 @@ export function getNombre(row: any): string {
  */
 export function getDocumento(row: any): string {
   const keys = Object.keys(row);
+
+  // Check Nombre de usuario first as it contains both document & type
+  const usernameKey = keys.find(key => {
+    const norm = normalizeKey(key);
+    return norm === 'nombre de usuario' || norm === 'usuario' || norm === 'username' || norm === 'nombre_usuario';
+  });
+  if (usernameKey && row[usernameKey]) {
+    const parsed = parseNombreUsuario(String(row[usernameKey]));
+    if (parsed) {
+      return parsed.documento;
+    }
+  }
   
   const docKeys = [
     'documento',
@@ -111,6 +173,57 @@ export function getDocumento(row: any): string {
   }
 
   return '';
+}
+
+/**
+ * Breakdown an evidence column header into details.
+ */
+export function desglosarEvidencia(header: string, faseNombre: string) {
+  if (!header) {
+    return {
+      nombre: '',
+      codigo: '',
+      actividadProyecto: 'Sin Actividad',
+      fase: faseNombre || '',
+      tipo: 'Evidencia',
+    };
+  }
+  const norm = header.toLowerCase();
+  let tipo = 'Evidencia';
+  if (norm.includes('prueba de conocimiento') || norm.includes('evaluacion') || norm.includes('cuestionario') || norm.includes('prueba')) {
+    tipo = 'Prueba de Conocimiento';
+  } else if (norm.includes('foro')) {
+    tipo = 'Foro';
+  }
+
+  // Extract code: finding pattern GA\d+-\d+-AA\d+-EV\d+ or similar
+  const codeMatch = header.match(/(GA\d+-[A-Za-z0-9_-]+)/i);
+  let codigo = '';
+  let actividadProyecto = 'Sin Actividad';
+
+  if (codeMatch) {
+    codigo = codeMatch[1].toUpperCase();
+    const actMatch = codigo.match(/^(GA\d+)/i);
+    if (actMatch) {
+      actividadProyecto = actMatch[1].toUpperCase();
+    }
+  } else {
+    const gaMatch = header.match(/(GA\d+)/i);
+    if (gaMatch) {
+      actividadProyecto = gaMatch[1].toUpperCase();
+      codigo = header;
+    } else {
+      codigo = header;
+    }
+  }
+
+  return {
+    nombre: header,
+    codigo,
+    actividadProyecto,
+    fase: faseNombre,
+    tipo,
+  };
 }
 
 /**
@@ -202,7 +315,13 @@ export async function leerArchivoExcel(file: File): Promise<{ headers: string[];
       try {
         const data = e.target?.result;
         const workbook = XLSX.read(data, { type: 'binary', cellDates: true });
-        const sheetName = workbook.SheetNames[0];
+        
+        // Find sheet that contains "calificacion" or "calificaciones", mapping to the sena instructions
+        const sheetName = workbook.SheetNames.find(name => 
+          name.toLowerCase().includes('calificacion') || 
+          name.toLowerCase().includes('calificaciones')
+        ) || workbook.SheetNames[0];
+
         const sheet = workbook.Sheets[sheetName];
         
         const sheetRows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
@@ -251,7 +370,9 @@ export function detectarFases(headers: string[]): Fase[] {
       norm.includes('telefono') ||
       norm.includes('phone') ||
       norm.includes('mobile') ||
-      norm.includes('movil')
+      norm.includes('movil') ||
+      norm.includes('institucion') ||
+      norm.includes('departamento')
     );
   };
 
@@ -313,49 +434,74 @@ export function normalizarAprendices(
       const nombre = getNombre(row);
       const correo = getCorreo(row);
       const telefono = getTelefono(row);
+      const tipoDocumento = getTipoDocumento(row);
       
       if (!documento && !nombre) return null; // skip completely empty rows
       
-      const evidencias: Record<string, string> = {};
+      const evidencias: Record<string, any> = {};
       
-      // Extract grades for each evidence
+      // Extract grades and metadata for each evidence
       phases.forEach(phase => {
         phase.evidencias.forEach(ev => {
           const value = row[ev.nombre];
+          let val = '-';
           if (value !== undefined) {
-            // standardize: A (Aprobado), D (Desaprobado), * (No entregado)
-            let val = String(value).trim().toUpperCase();
-            if (val === 'A' || val === 'APROBADO' || val === 'APROBADA') {
+            // standardize: A (Aprobado), D (Desaprobado), - (No entregado)
+            let rawVal = String(value).trim().toUpperCase();
+            if (rawVal === 'A' || rawVal === 'APROBADO' || rawVal === 'APROBADA') {
               val = 'A';
-            } else if (val === 'D' || val === 'DESAPROBADO' || val === 'DESAPROBADA' || val === 'REPROBADO' || val === 'REPROBADA') {
+            } else if (rawVal === 'D' || rawVal === 'DESAPROBADO' || rawVal === 'DESAPROBADA' || rawVal === 'REPROBADO' || rawVal === 'REPROBADA') {
               val = 'D';
-            } else if (val === '*' || val === '' || val === 'NO ENTREGO' || val === 'FALTA' || val === 'NO ENTREGÓ') {
-              val = '*';
             } else {
-              // fallback, check if empty
-              val = val === '' ? '*' : val;
+              val = '-';
             }
-            evidencias[ev.nombre] = val;
-          } else {
-            evidencias[ev.nombre] = '*'; // default to not delivered if column is missing on this row
           }
+          
+          const info = desglosarEvidencia(ev.nombre, phase.nombre);
+          evidencias[ev.nombre] = {
+            nombre: info.nombre,
+            codigo: info.codigo,
+            actividadProyecto: info.actividadProyecto,
+            fase: info.fase,
+            tipo: info.tipo,
+            estado: val
+          };
         });
+      });
+
+      // Extract phase summary
+      const resumenFases: Record<string, string> = {};
+      const keys = Object.keys(row);
+      keys.forEach(k => {
+        const norm = normalizeKey(k);
+        if (norm.includes('total fase') || norm.includes('total de la fase') || norm.includes('total de fase') || norm.includes('total del curso') || norm.includes('total curso')) {
+          let val = '-';
+          const rVal = String(row[k]).trim().toUpperCase();
+          if (rVal === 'A' || rVal === 'APROBADO' || rVal === 'APROBADA') {
+            val = 'A';
+          } else if (rVal === 'D' || rVal === 'DESAPROBADO' || rVal === 'DESAPROBADA' || rVal === 'REPROBADO' || rVal === 'REPROBADA') {
+            val = 'D';
+          }
+          resumenFases[k] = val;
+        }
       });
       
       return {
         id: documento || `temp-${index}`,
         nombre,
         documento,
+        tipoDocumento,
         correo,
         telefono,
         evidencias,
+        resumenFases,
         ultimoAcceso: null,
         diasSinAcceso: null,
         puntajeRiesgo: 0,
         nivelRiesgo: 'Bajo' as const,
         estadoIntervencion: 'Sin intervención' as const,
         historialIntervenciones: []
-      } as Aprendiz;
+      } as unknown as Aprendiz;
     })
     .filter((a): a is Aprendiz => a !== null);
 }
@@ -465,6 +611,68 @@ export async function leerArchivoExcel2D(file: File): Promise<any[][]> {
     reader.onerror = (err) => reject(err);
     reader.readAsBinaryString(file);
   });
+}
+
+/**
+ * Detects whether the parsed 2D rows correspond to 'calificaciones' (grading report)
+ * or 'aprendices' (apprentice list/enrolment).
+ */
+export function detectExcelReportType(rows2D: any[][]): 'aprendices' | 'calificaciones' | 'unknown' {
+  if (!Array.isArray(rows2D) || rows2D.length === 0) return 'unknown';
+
+  let hasQualificationsIndicators = false;
+  let hasLearnersIndicators = false;
+
+  // Scan cells in the first 50 rows to detect typical indicators for both reports
+  for (let r = 0; r < Math.min(50, rows2D.length); r++) {
+    const row = rows2D[r] || [];
+    for (let c = 0; c < row.length; c++) {
+      const val = String(row[c] || '').trim();
+      const valLower = val.toLowerCase();
+      const valClean = valLower.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+      // Calificaciones indicators
+      if (
+        valLower.includes('evidencia:') ||
+        valLower.includes('foro:') ||
+        valLower.includes('prueba de conocimiento:') ||
+        valClean.includes('total de la fase') ||
+        valLower.includes('total fase') ||
+        valLower.includes('total del curso') ||
+        valClean.includes('nombre de usuario')
+      ) {
+        hasQualificationsIndicators = true;
+      }
+
+      // Aprendices indicators
+      if (
+        valClean === 'tipo de documento' ||
+        valClean === 'numero de documento' ||
+        valClean === 'correo electronico' ||
+        valLower === 'celular' ||
+        valLower === 'estado'
+      ) {
+        hasLearnersIndicators = true;
+      }
+    }
+  }
+
+  if (hasQualificationsIndicators && !hasLearnersIndicators) {
+    return 'calificaciones';
+  }
+  if (hasLearnersIndicators && !hasQualificationsIndicators) {
+    return 'aprendices';
+  }
+
+  // Fallback checks
+  if (hasQualificationsIndicators) {
+    return 'calificaciones';
+  }
+  if (hasLearnersIndicators) {
+    return 'aprendices';
+  }
+
+  return 'unknown';
 }
 
 /**

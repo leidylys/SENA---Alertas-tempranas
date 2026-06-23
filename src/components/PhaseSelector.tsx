@@ -1,6 +1,7 @@
 import React from 'react';
 import { Layers, AlertTriangle, CheckSquare, Square, Info } from 'lucide-react';
 import { Fase } from '../types';
+import { formatEvidenciaNombre } from '../utils/formatters';
 
 interface PhaseSelectorProps {
   fases: Fase[];
@@ -108,7 +109,7 @@ export default function PhaseSelector({
                           onChange={() => onToggleEvidencia(fase.id, ev.nombre)}
                           className="mt-0.5 rounded border-slate-300 text-sena-500 focus:ring-sena-400 w-3 h-3 shrink-0"
                         />
-                        <span className="break-words" title={ev.nombre}>{ev.nombre}</span>
+                        <span className="break-words" title={ev.nombre}>{formatEvidenciaNombre(ev.nombre)}</span>
                       </label>
                     ))}
                   </div>

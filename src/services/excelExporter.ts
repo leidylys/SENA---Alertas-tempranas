@@ -28,9 +28,10 @@ export function exportarExcelSeguimiento(
 
     // Append columns for each evidence
     Object.entries(ap.evidencias).forEach(([evName, val]) => {
+      const valStr = val && typeof val === 'object' ? (val as any).estado : String(val);
       let label = 'Aprobado (A)';
-      if (val === 'D') label = 'Desaprobado (D)';
-      if (val === '*') label = 'No Entregado (*)';
+      if (valStr === 'D') label = 'Desaprobado (D)';
+      if (valStr === '-' || valStr === '*') label = 'No Entregado (-)';
       row[`Evid: ${evName}`] = label;
     });
 

@@ -59,7 +59,8 @@ export async function syncLearnersToDb(
   fechaInicio: string,
   fechaFin: string,
   aprendices: any[],
-  ultimoSeguimiento?: string
+  ultimoSeguimiento?: string,
+  isCalificaciones?: boolean
 ) {
   const res = await fetch(`/api/fichas/${fichaCodigo}/aprendices`, {
     method: 'POST',
@@ -73,10 +74,14 @@ export async function syncLearnersToDb(
       fechaInicio,
       fechaFin,
       aprendices,
-      ultimoSeguimiento
+      ultimoSeguimiento,
+      isCalificaciones
     })
   });
-  if (!res.ok) throw new Error('Error al sincronizar datos con base de datos');
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => null);
+    throw new Error(errorData?.error || 'Error al sincronizar datos con base de datos');
+  }
   return res.json();
 }
 

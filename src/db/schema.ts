@@ -65,6 +65,8 @@ export const aprendicesFichas = pgTable('aprendices_fichas', {
   diasSinAcceso: integer('dias_sin_acceso'),
   puntajeRiesgo: integer('puntaje_riesgo').notNull().default(0),
   evidencias: jsonb('evidencias').default({}).notNull(), // Map of grade statuses: { "Evid 1": "A", "Evid 2": "D" }
+  tipoDocumento: text('tipo_documento').default('CC'),
+  resumenFases: jsonb('resumen_fases').default({}).notNull(),
   estadoAprendiz: text('estado_aprendiz').notNull().default('Activo'), // 'Activo' or 'Inactivo'
   observacionEstado: text('observacion_estado'),
   fechaUltimoReporte: text('fecha_ultimo_reporte'),
@@ -86,6 +88,30 @@ export const seguimientosHistorico = pgTable('seguimientos_historico', {
   estadoNuevo: text('estado_nuevo').notNull(),
   detalles: text('detalles').notNull(), // text from instructor's commitment modal
   compromisoFecha: text('compromiso_fecha'), // Optional commitment deadline
+  tipoSeguimiento: text('tipo_seguimiento'), // e.g. "Correo de llamado a ponerse al día"
+  evidenciasPendientes: integer('evidencias_pendientes'),
+  diasSinAcceso: integer('dias_sin_acceso'),
+  numeroLlamado: integer('numero_llamado'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+});
+
+// 7. Table for Alertas Críticas (Administrative escalation)
+export const alertasCriticas = pgTable('alertas_criticas', {
+  id: serial('id').primaryKey(),
+  aprendizFichaId: integer('aprendiz_ficha_id')
+    .references(() => aprendicesFichas.id, { onDelete: 'cascade' })
+    .notNull(),
+  instructorId: integer('instructor_id')
+    .references(() => instructores.id)
+    .notNull(),
+  totalLlamados: integer('total_llamados').notNull().default(0),
+  evidenciasPendientes: integer('evidencias_pendientes').notNull().default(0),
+  diasSinAcceso: integer('dias_sin_acceso'),
+  ultimoAcceso: text('ultimo_acceso'),
+  historialResumido: text('historial_resumido').notNull(),
+  nivelRiesgo: text('nivel_riesgo').notNull().default('Alto'),
+  estado: text('estado').notNull().default('Pendiente de revisión'), // 'Pendiente de revisión', 'En gestión administrativa', 'Remitido a comité', 'Cerrado', 'Cerrado por mejora'
+  fechaEscalamiento: timestamp('fecha_escalamiento').defaultNow().notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
@@ -93,6 +119,7 @@ export const seguimientosHistorico = pgTable('seguimientos_historico', {
 export const instructoresRelations = relations(instructores, ({ many }) => ({
   instructorFichas: many(instructorFicha),
   seguimientos: many(seguimientosHistorico),
+  alertasCriticas: many(alertasCriticas),
 }));
 
 export const programasRelations = relations(programasFormacion, ({ many }) => ({
@@ -125,6 +152,7 @@ export const aprendicesRelations = relations(aprendicesFichas, ({ one, many }) =
     references: [fichas.id],
   }),
   seguimientos: many(seguimientosHistorico),
+  alertasCriticas: many(alertasCriticas),
 }));
 
 export const seguimientosRelations = relations(seguimientosHistorico, ({ one }) => ({
@@ -134,6 +162,17 @@ export const seguimientosRelations = relations(seguimientosHistorico, ({ one }) 
   }),
   instructor: one(instructores, {
     fields: [seguimientosHistorico.instructorId],
+    references: [instructores.id],
+  }),
+}));
+
+export const alertasCriticasRelations = relations(alertasCriticas, ({ one }) => ({
+  aprendizFicha: one(aprendicesFichas, {
+    fields: [alertasCriticas.aprendizFichaId],
+    references: [aprendicesFichas.id],
+  }),
+  instructor: one(instructores, {
+    fields: [alertasCriticas.instructorId],
     references: [instructores.id],
   }),
 }));

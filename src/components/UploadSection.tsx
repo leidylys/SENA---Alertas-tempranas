@@ -2,7 +2,7 @@ import React, { useState, useRef } from 'react';
 import { Upload, FileSpreadsheet, Sparkles, Building, Briefcase, GraduationCap, User, Info, HelpCircle } from 'lucide-react';
 import { FichaInfo } from '../types';
 import { useFichaInfo } from '../hooks/useFichaInfo';
-import { leerArchivoExcel, detectarFases, normalizarAprendices, combinarDatos } from '../utils/excelParser';
+import { leerArchivoExcel, leerArchivoExcel2D, detectarFases, normalizarAprendices, combinarDatos, detectExcelReportType } from '../utils/excelParser';
 import { CALIFICACIONES_MOCK_RAW, PARTICIPANTES_MOCK_RAW, GENERATED_FASES_MOCK } from '../data/mockData';
 
 interface UploadSectionProps {
@@ -76,6 +76,15 @@ export default function UploadSection({ onDataLoaded }: UploadSectionProps) {
 
     setLoading(true);
     try {
+      // Validate that qualificationsFile corresponds to a qualifications report
+      const rows2D = await leerArchivoExcel2D(qualificationsFile);
+      const reportType = detectExcelReportType(rows2D);
+      if (reportType === 'aprendices') {
+        alert("El archivo cargado corresponde a un reporte de aprendices y no a un reporte de calificaciones.");
+        setLoading(false);
+        return;
+      }
+
       // 1. Process Qualifications Excel (obligatorio)
       const parsedQuals = await leerArchivoExcel(qualificationsFile);
       const phases = detectarFases(parsedQuals.headers);

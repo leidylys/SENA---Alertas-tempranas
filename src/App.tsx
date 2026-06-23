@@ -70,7 +70,25 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState<FirebaseUser | null>(null);
   const [authToken, setAuthToken] = useState<string | null>(null);
   const [instructorProfile, setInstructorProfile] = useState<{ id: number; nombre: string; correo: string; rol: string } | null>(null);
-  const [savedFichas, setSavedFichas] = useState<any[]>([]);
+  const [savedFichasState, setSavedFichasState] = useState<any[]>([]);
+  const deduplicateFichas = (fichasArray: any[]) => {
+    if (!Array.isArray(fichasArray)) return [];
+    const seenIds = new Set();
+    return fichasArray.filter(f => {
+      if (!f) return false;
+      const identifier = f.id !== undefined && f.id !== null ? f.id : f.codigoFicha;
+      if (identifier === undefined || identifier === null) return true;
+      if (seenIds.has(identifier)) {
+        return false;
+      }
+      seenIds.add(identifier);
+      return true;
+    });
+  };
+  const setSavedFichas = (fichasArray: any[]) => {
+    setSavedFichasState(deduplicateFichas(fichasArray));
+  };
+  const savedFichas = savedFichasState;
   const [availableDemoInstructors, setAvailableDemoInstructors] = useState<any[]>([]);
   const [fichasSearchQuery, setFichasSearchQuery] = useState('');
   const [fichasTabFilter, setFichasTabFilter] = useState<'todas' | 'activas' | 'futuras' | 'finalizadas'>('activas');
@@ -81,7 +99,7 @@ export default function App() {
   const [currentView, setCurrentView] = useState<'fichas_list' | 'upload_new' | 'active_dashboard'>('fichas_list');
   const [fichaInfo, setFichaInfo] = useState<FichaInfo | null>(null);
   const [isSavingNewFicha, setIsSavingNewFicha] = useState(false);
-  const [adminActiveTab, setAdminActiveTab] = useState<'programacion' | 'aprendices_masivo'>('programacion');
+  const [adminActiveTab, setAdminActiveTab] = useState<'programacion' | 'aprendices_masivo' | 'alertas_criticas'>('programacion');
   const [loginEmail, setLoginEmail] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   const [loginError, setLoginError] = useState<string | null>(null);

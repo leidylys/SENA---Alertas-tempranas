@@ -25,7 +25,8 @@ import {
   Search,
   Users,
   ChevronLeft,
-  ChevronRight
+  ChevronRight,
+  X
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { 
@@ -36,7 +37,8 @@ import {
   detectarFases,
   normalizarAprendices,
   combinarDatos,
-  parseReporteAprendicesExcel
+  parseReporteAprendicesExcel,
+  detectExcelReportType
 } from '../utils/excelParser';
 import { uploadProgrammingGrid, syncLearnersToDb, resetSystemDatabase } from '../lib/api';
 import { procesarTodosLosAprendices } from '../utils/riskCalculator';
@@ -88,8 +90,8 @@ interface BatchFileItem {
 interface AdminSectionProps {
   authToken: string;
   onSuccessSync: () => void;
-  activeTab?: 'programacion' | 'aprendices_masivo';
-  onChangeTab?: (tab: 'programacion' | 'aprendices_masivo') => void;
+  activeTab?: 'programacion' | 'aprendices_masivo' | 'alertas_criticas';
+  onChangeTab?: (tab: 'programacion' | 'aprendices_masivo' | 'alertas_criticas') => void;
   savedFichas?: any[];
   onSelectFicha?: (codigoFicha: string) => void;
 }
@@ -102,7 +104,7 @@ export default function AdminSection({
   savedFichas = [],
   onSelectFicha
 }: AdminSectionProps) {
-  const [internalActiveTab, setInternalActiveTab] = useState<'programacion' | 'aprendices_masivo'>('programacion');
+  const [internalActiveTab, setInternalActiveTab] = useState<'programacion' | 'aprendices_masivo' | 'alertas_criticas'>('programacion');
 
   const activeTab = externalActiveTab !== undefined ? externalActiveTab : internalActiveTab;
   const setActiveTab = externalOnChangeTab !== undefined ? externalOnChangeTab : setInternalActiveTab;
@@ -629,6 +631,13 @@ export default function AdminSection({
     for (const item of items) {
       try {
         const rows2D = await leerArchivoExcel2D(item.file);
+        
+        // Validate that this is indeed an apprentice listing and not a qualifications report
+        const reportType = detectExcelReportType(rows2D);
+        if (reportType === 'calificaciones') {
+          throw new Error('El archivo cargado corresponde a un reporte de calificaciones y no a un listado de aprendices.');
+        }
+
         const result = parseReporteAprendicesExcel(rows2D);
         
         let detectedFicha = result.fichaCodigo || item.fichaCodigo;
@@ -649,7 +658,7 @@ export default function AdminSection({
         setBatchFiles(prev => prev.map(f => f.id === item.id ? {
           ...f,
           status: 'error',
-          errorMsg: 'Fallo al procesar reporte de aprendices Excel: ' + (err.message || 'Estructura inválida o vacía')
+          errorMsg: err.message || 'Estructura inválida o vacía'
         } : f));
       }
     }
@@ -829,6 +838,18 @@ export default function AdminSection({
           <GraduationCap className="w-4 h-4" />
           <span>Reporte de Aprendices (Varios Archivos)</span>
         </button>
+        <button
+          onClick={() => setActiveTab('alertas_criticas')}
+          className={`flex items-center gap-2 px-4 py-2 text-xs font-bold rounded-lg transition-all duration-300 cursor-pointer ${
+            activeTab === 'alertas_criticas'
+              ? 'bg-[#39A900] text-white shadow-xs'
+              : 'text-slate-500 hover:text-slate-800'
+          }`}
+          id="admin-tab-alertas-criticas-btn"
+        >
+          <ShieldAlert className="w-4 h-4" />
+          <span>Alertas Críticas</span>
+        </button>
       </div>
 
       {syncStatus && (
@@ -961,7 +982,7 @@ export default function AdminSection({
         </div>
       )}
 
-      {activeTab === 'programacion' ? (
+      {activeTab === 'programacion' && (
         <div className="space-y-4">
           {parsedRows.length === 0 ? (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
@@ -1179,15 +1200,17 @@ export default function AdminSection({
           </div>
           )}
         </div>
-      ) : (
+      )}
+
+      {activeTab === 'aprendices_masivo' && (
         /* APRENDICES MASIVO TAB VIEW */
         <div className="space-y-5 animate-fade-in" id="aprendices-masivo-panel-section">
           <div className="bg-emerald-50 border border-emerald-250 p-4 rounded-xl flex items-start gap-3 text-xs text-emerald-950 shadow-4xs">
             <GraduationCap className="w-5 h-5 text-[#39A900] shrink-0 mt-0.5" />
             <div className="space-y-1">
-              <span className="font-extrabold font-sans">Cargar Reportes de Aprendices por Ficha en Lote:</span>
+              <span className="font-extrabold font-sans">Cargar Listados de Aprendices por Ficha en Lote:</span>
               <p className="text-slate-655 font-normal leading-relaxed">
-                Suba uno o varios reportes de calificaciones exportados en formato Excel desde el LMS de cada ficha. El sistema de asignación automática de aprendices por lote detectará automáticamente los códigos de ficha y los registrará de forma secuencial sin que deba hacerlo de forma manual.
+                Suba uno o varios reportes de matrícula o listados oficiales de aprendices inscritos en formato Excel para cada ficha del sistema. El sistema de asignación y sincronización por lote detectará automáticamente los códigos de ficha y los registrará de forma secuencial sin modificaciones manuales.
               </p>
             </div>
           </div>
@@ -2040,6 +2063,388 @@ export default function AdminSection({
                 )}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'alertas_criticas' && (
+        <AlertasCriticasSection authToken={authToken} />
+      )}
+
+    </div>
+  );
+}
+
+function AlertasCriticasSection({ authToken }: { authToken: string }) {
+  const [alertas, setAlertas] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [statusFilter, setStatusFilter] = useState<string>('todos');
+
+  // Management modal state
+  const [selectedAlerta, setSelectedAlerta] = useState<any | null>(null);
+  const [nuevoEstado, setNuevoEstado] = useState<string>('');
+  const [observacion, setObservacion] = useState<string>('');
+  const [saving, setSaving] = useState(false);
+
+  const fetchAlertas = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch('/api/administrativo/alertas-criticas', {
+        headers: {
+          'Authorization': `Bearer ${authToken}`
+        }
+      });
+      if (!res.ok) {
+        throw new Error('No se pudieron obtener las alertas críticas.');
+      }
+      const data = await res.json();
+      setAlertas(data);
+    } catch (err: any) {
+      console.error(err);
+      setError(err.message || 'Error de conexión.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchAlertas();
+  }, [authToken]);
+
+  const handleOpenGestion = (al: any) => {
+    setSelectedAlerta(al);
+    setNuevoEstado(al.estadoAlerta || 'Requiere intervención administrativa');
+    setObservacion(al.observacionAdministrativa || '');
+  };
+
+  const handleGuardarGestion = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedAlerta) return;
+    setSaving(true);
+    try {
+      const res = await fetch(`/api/administrativo/alertas-criticas/${selectedAlerta.id}/estado`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${authToken}`
+        },
+        body: JSON.stringify({
+          estadoAlerta: nuevoEstado,
+          observacion: observacion
+        })
+      });
+      if (!res.ok) {
+        throw new Error('Fallo al actualizar el estado de la alerta.');
+      }
+      const updated = await res.json();
+      
+      // Update local state
+      setAlertas(prev => prev.map(a => a.id === selectedAlerta.id ? { 
+        ...a, 
+        estadoAlerta: updated.alerta.estadoAlerta, 
+        observacionAdministrativa: updated.alerta.observacionAdministrativa,
+        updatedAt: updated.alerta.updatedAt
+      } : a));
+
+      setSelectedAlerta(null);
+      alert('¡Estado de la alerta crítica actualizado con éxito!');
+    } catch (err: any) {
+      console.error(err);
+      alert(err.message || 'Error al guardar gestión.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const filteredAlertas = alertas.filter(a => {
+    const matchesSearch = 
+      a.nombre.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      a.documento.includes(searchTerm) ||
+      a.fichaId.includes(searchTerm) ||
+      a.programaFormacion.toLowerCase().includes(searchTerm.toLowerCase());
+    
+    const matchesStatus = statusFilter === 'todos' || a.estadoAlerta === statusFilter;
+    
+    return matchesSearch && matchesStatus;
+  });
+
+  return (
+    <div className="space-y-6 animate-fade-in text-left">
+      {/* Overview Card */}
+      <div className="bg-red-50 border border-red-200 p-4 rounded-xl flex items-start gap-3 text-xs text-red-950 shadow-4xs">
+        <ShieldAlert className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
+        <div className="space-y-1">
+          <span className="font-extrabold font-sans">Panel de Escalación de Alertas Críticas:</span>
+          <p className="text-slate-655 font-normal leading-relaxed">
+            Aquí se concentran de forma automática los aprendices de cualquier ficha que han acumulado <strong>más de 3 llamados de atención académicos o de inasistencia</strong> sin resolver. Como Coordinador o Administrador, evalúe la severidad del caso, deje observaciones del trámite realizado y cambie el estado de atención.
+          </p>
+        </div>
+      </div>
+
+      {/* Filters and Search Bar */}
+      <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-3xs flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div className="relative flex-1 max-w-md">
+          <Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
+          <input
+            type="text"
+            placeholder="Buscar por aprendiz, documento, ficha o programa..."
+            value={searchTerm}
+            onChange={e => setSearchTerm(e.target.value)}
+            className="w-full pl-9 pr-4 py-2 border border-slate-250 rounded-lg text-xs font-medium focus:border-red-500 focus:ring-1 focus:ring-red-500 outline-none"
+          />
+        </div>
+        
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-bold text-slate-500">Filtrar Estado:</span>
+          <select
+            value={statusFilter}
+            onChange={e => setStatusFilter(e.target.value)}
+            className="border border-slate-250 bg-white rounded-lg px-3 py-1.5 text-xs font-bold text-slate-700 outline-none focus:ring-1 focus:ring-red-500"
+          >
+            <option value="todos">Todos los Estados</option>
+            <option value="Requiere intervención administrativa">Requiere intervención administrativa</option>
+            <option value="En trámite">En trámite</option>
+            <option value="Cerrado">Cerrado</option>
+            <option value="Cerrado por mejora">Cerrado por mejora</option>
+          </select>
+          
+          <button 
+            onClick={fetchAlertas}
+            className="p-1.5 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded-lg transition-colors border border-slate-200 cursor-pointer"
+            title="Refrescar Alertas"
+            type="button"
+          >
+            <RefreshCw className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+
+      {/* Data Section */}
+      {loading ? (
+        <div className="py-20 flex flex-col items-center justify-center space-y-3">
+          <Loader2 className="w-8 h-8 animate-spin text-red-600" />
+          <p className="text-xs font-bold text-slate-500">Cargando alertas críticas del sistema...</p>
+        </div>
+      ) : error ? (
+        <div className="p-8 bg-red-50/50 rounded-xl border border-red-150 text-center space-y-2">
+          <AlertTriangle className="w-10 h-10 text-red-600 mx-auto" />
+          <p className="text-sm font-bold text-slate-700">Error al cargar datos</p>
+          <p className="text-xs text-slate-500">{error}</p>
+          <button 
+            onClick={fetchAlertas}
+            className="mt-2 bg-red-600 text-white text-xs font-bold py-1.5 px-4 rounded-lg hover:bg-red-700"
+            type="button"
+          >
+            Reintentar
+          </button>
+        </div>
+      ) : filteredAlertas.length === 0 ? (
+        <div className="py-16 text-center border border-slate-150 border-dashed rounded-xl bg-slate-50/40 space-y-3">
+          <CheckCircle className="w-12 h-12 text-[#39A900] mx-auto animate-pulse" />
+          <div className="space-y-1">
+            <h4 className="text-sm font-extrabold text-slate-800">¡No hay Alertas Críticas Vigentes!</h4>
+            <p className="text-xs text-slate-500 max-w-md mx-auto">
+              Todos los aprendices se encuentran en un margen de llamados saludable (menos de 4 llamados) o sus alertas administrativas han sido cerradas con éxito.
+            </p>
+          </div>
+        </div>
+      ) : (
+        <div className="bg-white border border-slate-200 rounded-xl shadow-3xs overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse">
+              <thead>
+                <tr className="bg-slate-50/80 border-b border-slate-150 text-[10px] font-black uppercase tracking-wider text-slate-500">
+                  <th className="py-3 px-4">Aprendiz</th>
+                  <th className="py-3 px-4">Ficha / Programa</th>
+                  <th className="py-3 px-4 text-center">Llamados</th>
+                  <th className="py-3 px-4 text-center">Inasistencia</th>
+                  <th className="py-3 px-4">Historial de Llamados</th>
+                  <th className="py-3 px-4">Estado</th>
+                  <th className="py-3 px-4 text-center">Acción</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 text-xs">
+                {filteredAlertas.map((al) => {
+                  let badgeBg = 'bg-red-50 text-red-800 border-red-200';
+                  if (al.estadoAlerta === 'En trámite') {
+                    badgeBg = 'bg-amber-50 text-amber-800 border-amber-200';
+                  } else if (al.estadoAlerta === 'Cerrado') {
+                    badgeBg = 'bg-slate-100 text-slate-700 border-slate-300';
+                  } else if (al.estadoAlerta === 'Cerrado por mejora') {
+                    badgeBg = 'bg-emerald-50 text-emerald-800 border-emerald-200';
+                  }
+
+                  return (
+                    <tr key={al.id} className="hover:bg-slate-50/50 transition-colors">
+                      <td className="py-3.5 px-4">
+                        <div className="space-y-0.5">
+                          <span className="font-bold text-slate-800 text-xs">{al.nombre}</span>
+                          <span className="block text-[10px] text-slate-500 font-mono">CC {al.documento} • {al.correo}</span>
+                        </div>
+                      </td>
+                      <td className="py-3.5 px-4">
+                        <div className="space-y-0.5 max-w-[200px]">
+                          <span className="bg-slate-100 text-slate-700 border border-slate-200 font-mono font-black text-[10px] px-1.5 py-0.5 rounded">
+                            Ficha {al.fichaId}
+                          </span>
+                          <span className="block text-[10px] text-slate-500 font-medium truncate mt-0.5" title={al.programaFormacion}>
+                            {al.programaFormacion}
+                          </span>
+                        </div>
+                      </td>
+                      <td className="py-3.5 px-4 text-center">
+                        <span className="inline-flex items-center justify-center bg-red-100 text-red-800 font-black px-2.5 py-1 rounded-full text-xs">
+                          {al.totalLlamados}
+                        </span>
+                      </td>
+                      <td className="py-3.5 px-4 text-center">
+                        <span className="font-bold text-slate-700">
+                          {al.diasSinAcceso} días
+                        </span>
+                      </td>
+                      <td className="py-3.5 px-4">
+                        <div className="max-w-[260px] space-y-1 text-[10.5px]">
+                          {al.historialLlamados && al.historialLlamados.length > 0 ? (
+                            al.historialLlamados.map((ll: any, idx: number) => (
+                              <div key={idx} className="bg-slate-50 border border-slate-100 px-2 py-1 rounded text-slate-600 font-mono leading-tight">
+                                <strong className="text-red-700"># {ll.numeroLlamado || idx + 1}:</strong> {ll.fecha} • {ll.instructor || 'Inst.'}
+                                <span className="block text-[9px] text-slate-400">Evidencias: {ll.evidenciasPendientes} • Inasistencia: {ll.diasSinAcceso}d</span>
+                              </div>
+                            ))
+                          ) : (
+                            <span className="text-slate-400 italic">No hay registros de llamados.</span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="py-3.5 px-4">
+                        <div className="space-y-1">
+                          <span className={`inline-flex px-2 py-0.5 rounded-full text-[10px] font-extrabold uppercase border ${badgeBg}`}>
+                            {al.estadoAlerta}
+                          </span>
+                          {al.observacionAdministrativa && (
+                            <p className="text-[10px] text-slate-550 italic max-w-[150px] line-clamp-2" title={al.observacionAdministrativa}>
+                              "{al.observacionAdministrativa}"
+                            </p>
+                          )}
+                        </div>
+                      </td>
+                      <td className="py-3.5 px-4 text-center">
+                        <button
+                          onClick={() => handleOpenGestion(al)}
+                          className="bg-slate-800 hover:bg-slate-900 text-white font-extrabold text-[10.5px] px-3 py-1.5 rounded-lg shadow-sm transition-all cursor-pointer inline-flex items-center gap-1"
+                          type="button"
+                        >
+                          Gestionar
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Gestionar Alerta Modal Slideover/Popup */}
+      {selectedAlerta && (
+        <div className="fixed inset-0 bg-slate-900/65 backdrop-blur-xs flex items-center justify-center p-4 z-50 overflow-y-auto animate-fade-in" id="modal-gestionar-alerta-critica">
+          <div className="bg-white rounded-2xl shadow-xl border border-slate-100 max-w-lg w-full flex flex-col overflow-hidden animate-scale-up text-left">
+            {/* Header */}
+            <div className="bg-slate-900 py-4 px-6 text-white flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <ShieldAlert className="w-5 h-5 text-amber-500 animate-pulse" />
+                <h3 className="font-extrabold text-sm tracking-wide uppercase text-white">Gestionar Alerta Administrativa</h3>
+              </div>
+              <button 
+                type="button" 
+                onClick={() => setSelectedAlerta(null)}
+                className="p-1 hover:bg-white/10 rounded-full transition-colors text-white"
+              >
+                <X className="w-5 h-5 text-white" />
+              </button>
+            </div>
+
+            <form onSubmit={handleGuardarGestion} className="p-6 space-y-4">
+              
+              {/* Context Stats */}
+              <div className="bg-slate-50 rounded-xl p-4 border border-slate-200 text-xs space-y-1.5">
+                <div>
+                  <span className="text-slate-400 font-bold uppercase text-[9px] tracking-wider block">Aprendiz</span>
+                  <span className="font-black text-slate-800 text-sm">{selectedAlerta.nombre}</span>
+                </div>
+                <div className="grid grid-cols-2 gap-2 pt-1 border-t border-slate-100">
+                  <div>
+                    <span className="text-slate-400 font-bold uppercase text-[9px] block">Ficha</span>
+                    <span className="font-bold text-slate-700">{selectedAlerta.fichaId}</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-400 font-bold uppercase text-[9px] block">Llamados Recibidos</span>
+                    <span className="font-bold text-red-600">{selectedAlerta.totalLlamados} llamados</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Status input dropdown */}
+              <div className="space-y-1">
+                <label className="block text-xs font-black text-slate-700 uppercase">Estado del Trámite:</label>
+                <select
+                  value={nuevoEstado}
+                  onChange={e => setNuevoEstado(e.target.value)}
+                  className="w-full px-3 py-2 border border-slate-200 bg-white rounded-lg text-xs font-bold text-slate-800 outline-none focus:ring-1 focus:ring-red-500 focus:border-red-500"
+                >
+                  <option value="Requiere intervención administrativa">Requiere intervención administrativa (Pendiente)</option>
+                  <option value="En trámite">En trámite (Comité en curso, etc.)</option>
+                  <option value="Cerrado">Cerrado (Desvinculado, Sancionado, etc.)</option>
+                  <option value="Cerrado por mejora">Cerrado por mejora (Aprendiz se puso al día)</option>
+                </select>
+              </div>
+
+              {/* Observation textarea */}
+              <div className="space-y-1">
+                <label className="block text-xs font-black text-slate-700 uppercase">Observación o Detalle del Trámite Realizado:</label>
+                <textarea
+                  required
+                  rows={5}
+                  value={observacion}
+                  onChange={e => setObservacion(e.target.value)}
+                  placeholder="Ej: Se citó a Comité de Evaluación y Seguimiento de Ficha. El aprendiz firmó un plan de mejora académica para ponerse al día con plazo al 20 de junio..."
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs font-medium focus:border-red-500 focus:ring-1 focus:ring-red-500 outline-none leading-relaxed"
+                ></textarea>
+              </div>
+
+              {/* Footer action buttons */}
+              <div className="pt-3 flex justify-end gap-3 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setSelectedAlerta(null)}
+                  className="bg-white hover:bg-slate-50 text-slate-600 text-xs font-bold py-2 px-4 rounded-lg border border-slate-200 transition-all cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={saving}
+                  className="bg-slate-900 hover:bg-black text-white text-xs font-black py-2 px-5 rounded-lg shadow-md transition-all flex items-center gap-1.5 cursor-pointer"
+                >
+                  {saving ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>Guardando...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Check className="w-3.5 h-3.5 text-white" />
+                      <span>Registrar Gestión</span>
+                    </>
+                  )}
+                </button>
+              </div>
+
+            </form>
           </div>
         </div>
       )}

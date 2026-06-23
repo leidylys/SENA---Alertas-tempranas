@@ -5,12 +5,15 @@ import { Aprendiz, Fase } from '../types';
  */
 export function getEvidenciasSeleccionadas(fases: Fase[]): string[] {
   const selected: string[] = [];
+  if (!Array.isArray(fases)) return [];
   fases.forEach(fase => {
-    fase.evidencias.forEach(ev => {
-      if (ev.selected && fase.selected) {
-        selected.push(ev.nombre);
-      }
-    });
+    if (fase && Array.isArray(fase.evidencias)) {
+      fase.evidencias.forEach(ev => {
+        if (ev && ev.selected && fase.selected) {
+          selected.push(ev.nombre);
+        }
+      });
+    }
   });
   return selected;
 }
@@ -30,18 +33,30 @@ export function calcularRiesgoAprendiz(
 ): { puntaje: number; nivel: 'Bajo' | 'Medio' | 'Alto' } {
   let puntaje = 0;
 
+  if (!aprendiz) {
+    return { puntaje: 0, nivel: 'Bajo' };
+  }
+
   // 1. Evidences calculation
+  const evidencias = aprendiz.evidencias || {};
   evidenciasSeleccionadas.forEach(evName => {
-    const scoreVal = aprendiz.evidencias[evName];
+    const rawVal = evidencias[evName];
+    let scoreVal = '';
+    if (rawVal && typeof rawVal === 'object') {
+      scoreVal = (rawVal as any).estado || '';
+    } else if (rawVal !== undefined && rawVal !== null) {
+      scoreVal = String(rawVal);
+    }
+
     if (scoreVal === 'D') {
       puntaje += 2;
-    } else if (scoreVal === '*') {
+    } else if (scoreVal === '-' || scoreVal === '*') {
       puntaje += 3;
     }
   });
 
   // 2. Days without access calculation
-  if (aprendiz.diasSinAcceso !== null) {
+  if (aprendiz.diasSinAcceso !== null && aprendiz.diasSinAcceso !== undefined) {
     if (aprendiz.diasSinAcceso >= 14) {
       puntaje += 4;
     } else if (aprendiz.diasSinAcceso >= 7) {
@@ -67,16 +82,20 @@ export function procesarTodosLosAprendices(
   aprendices: Aprendiz[],
   fases: Fase[]
 ): Aprendiz[] {
-  const evidenciasSeleccionadas = getEvidenciasSeleccionadas(fases);
+  if (!Array.isArray(aprendices)) return [];
+  const evidenciasSeleccionadas = getEvidenciasSeleccionadas(fases || []);
   
-  return aprendices.map(ap => {
-    const { puntaje, nivel } = calcularRiesgoAprendiz(ap, evidenciasSeleccionadas);
-    return {
-      ...ap,
-      puntajeRiesgo: puntaje,
-      nivelRiesgo: nivel
-    };
-  });
+  return aprendices
+    .map(ap => {
+      if (!ap) return null;
+      const { puntaje, nivel } = calcularRiesgoAprendiz(ap, evidenciasSeleccionadas);
+      return {
+        ...ap,
+        puntajeRiesgo: puntaje,
+        nivelRiesgo: nivel
+      };
+    })
+    .filter((a): a is Aprendiz => a !== null);
 }
 
 /**

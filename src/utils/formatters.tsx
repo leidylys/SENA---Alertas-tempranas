@@ -71,3 +71,15 @@ export function rowColorNivel(nivel: 'Bajo' | 'Medio' | 'Alto'): string {
       return 'border-l-4 border-l-emerald-600 hover:bg-emerald-50/20';
   }
 }
+
+/**
+ * Formats evidence name to clean up any trailing "(Letra)" string for display.
+ */
+export function formatEvidenciaNombre(nombre: string): string {
+  if (!nombre) return '';
+  const suffix = ' (Letra)';
+  if (nombre.toUpperCase().endsWith(suffix.toUpperCase())) {
+    return nombre.substring(0, nombre.length - suffix.length).trim();
+  }
+  return nombre;
+}
