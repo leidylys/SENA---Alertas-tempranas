@@ -1856,188 +1856,223 @@ async function startServer() {
       const { programaFormacion, nivel, fechaInicio, fechaFin, aprendices } = req.body;
       const uid = req.user?.uid || '';
 
-      if (!fichaCodigo || !programaFormacion || !aprendices) {
-        return res.status(400).json({ error: 'Missing required sync parameters' });
+      if (!fichaCodigo || !aprendices) {
+        return res.status(400).json({ error: 'Falta el código de la ficha o la lista de aprendices' });
       }
 
-      // Sync Memory DB FIRST
-      const cleanProgName = programaFormacion || 'Programa sin nombre';
-      let memProg = memoryDb.programasFormacion.find(p => p.nombre === cleanProgName);
-      if (!memProg) {
-        memProg = {
-          id: memoryDb.programasFormacion.length + 1,
-          codigo: programaFormacion.substring(0, 30).toUpperCase().replace(/\s/g, ''),
-          nombre: cleanProgName,
-          nivel: nivel || 'Tecnólogo',
-          createdAt: new Date()
-        };
-        memoryDb.programasFormacion.push(memProg);
-      }
-
+      // Check if ficha exists in memoryDb
       let memFicha = memoryDb.fichas.find(f => f.codigoFicha === fichaCodigo);
-      if (memFicha) {
-        memFicha.fechaInicio = fechaInicio || memFicha.fechaInicio;
-        memFicha.fechaFin = fechaFin || memFicha.fechaFin;
-        memFicha.ultimoSeguimiento = req.body.ultimoSeguimiento || memFicha.ultimoSeguimiento;
-      } else {
+      
+      // Try finding the Ficha in Postgres DB
+      let pgFichaId: number | null = null;
+      try {
+        const existingPgFicha = await db.select().from(fichas).where(eq(fichas.codigoFicha, fichaCodigo));
+        if (existingPgFicha.length > 0) {
+          pgFichaId = existingPgFicha[0].id;
+        }
+      } catch (e) {
+        // Offline / dev mode bypass
+      }
+
+      // Requirement 2: If the ficha does not exist, throw a clear error
+      if (!memFicha && !pgFichaId) {
+        return res.status(404).json({
+          error: `Contenido Bloqueado: La ficha con código ${fichaCodigo} no está registrada en el sistema. Asegúrate de configurar o registrar primero la planificación de la ficha/coordinación académica antes de asociarle un listado de aprendices.`
+        });
+      }
+
+      // If existing Pg Ficha exists but not in memory, sync to memory
+      if (!memFicha && pgFichaId) {
         memFicha = {
-          id: memoryDb.fichas.length + 1,
+          id: pgFichaId,
           codigoFicha: fichaCodigo,
-          programaId: memProg.id,
+          programaId: 1, // fallback
           fechaInicio: fechaInicio || '2026-01-15',
           fechaFin: fechaFin || '2027-12-15',
-          ultimoSeguimiento: req.body.ultimoSeguimiento || undefined,
           createdAt: new Date()
         };
         memoryDb.fichas.push(memFicha);
       }
 
-      const memIns = memoryDb.instructores.find(i => i.uid === uid);
-      if (memIns) {
-        const memLinked = memoryDb.instructorFicha.find(link => link.instructorId === memIns.id && link.fichaId === memFicha.id);
-        if (!memLinked) {
-          memoryDb.instructorFicha.push({
-            id: memoryDb.instructorFicha.length + 1,
-            instructorId: memIns.id,
-            fichaId: memFicha.id,
-            rolEnFicha: memIns.rol || 'Instructor Técnico',
-            createdAt: new Date()
-          });
-        }
-      }
+      const nowStr = new Date().toISOString().substring(0, 10);
 
-      for (const s of aprendices) {
-        let memStudent = memoryDb.aprendicesFichas.find(st => st.fichaId === memFicha.id && st.documento === s.documento);
-        if (memStudent) {
-          memStudent.nombre = s.nombre;
-          memStudent.correo = s.correo;
-          memStudent.telefono = s.telefono || null;
-          memStudent.nivelRiesgo = s.nivelRiesgo;
-          memStudent.ultimoAcceso = s.ultimoAcceso;
-          memStudent.diasSinAcceso = s.diasSinAcceso;
-          memStudent.puntajeRiesgo = s.puntajeRiesgo;
-          memStudent.evidencias = s.evidencias || {};
-        } else {
-          memStudent = {
-            id: memoryDb.aprendicesFichas.length + 1,
-            fichaId: memFicha.id,
-            documento: s.documento,
-            nombre: s.nombre,
-            correo: s.correo,
-            telefono: s.telefono || null,
-            nivelRiesgo: s.nivelRiesgo,
-            estadoIntervencion: 'Sin intervención',
-            ultimoAcceso: s.ultimoAcceso,
-            diasSinAcceso: s.diasSinAcceso,
-            puntajeRiesgo: s.puntajeRiesgo,
-            evidencias: s.evidencias || {},
-            createdAt: new Date()
-          };
-          memoryDb.aprendicesFichas.push(memStudent);
-        }
-      }
+      // Sincronización en InMemory DB
+      let memSummary = { nuevos: 0, actualizados: 0, conservados: 0, inactivados: 0, reactivados: 0 };
+      if (memFicha) {
+        // 1. Identify current learners in this ficha in memory
+        const currentMemStudents = memoryDb.aprendicesFichas.filter(l => l.fichaId === memFicha.id);
 
-      // Try Postgres Sync
-      try {
-        const progCode = programaFormacion.substring(0, 30).toUpperCase().replace(/\s/g, '');
-        const existingProg = await db.select().from(programasFormacion).where(eq(programasFormacion.codigo, progCode));
-        let pgId: number;
-
-        if (existingProg.length > 0) {
-          pgId = existingProg[0].id;
-        } else {
-          const insProg = await db.insert(programasFormacion)
-            .values({
-              codigo: progCode,
-              nombre: programaFormacion,
-              nivel: nivel || 'Tecnólogo',
-            })
-            .returning();
-          pgId = insProg[0].id;
-        }
-
-        const existingFicha = await db.select().from(fichas).where(eq(fichas.codigoFicha, fichaCodigo));
-        let fId: number;
-
-        if (existingFicha.length > 0) {
-          fId = existingFicha[0].id;
-          await db.update(fichas)
-            .set({
-              fechaInicio: fechaInicio || existingFicha[0].fechaInicio,
-              fechaFin: fechaFin || existingFicha[0].fechaFin,
-              ultimoSeguimiento: req.body.ultimoSeguimiento || existingFicha[0].ultimoSeguimiento,
-            })
-            .where(eq(fichas.id, fId));
-        } else {
-          const insFicha = await db.insert(fichas)
-            .values({
-              codigoFicha: fichaCodigo,
-              programaId: pgId,
-              fechaInicio: fechaInicio || '2026-01-15',
-              fechaFin: fechaFin || '2027-12-15',
-              ultimoSeguimiento: req.body.ultimoSeguimiento || undefined,
-            })
-            .returning();
-          fId = insFicha[0].id;
-        }
-
-        const insResult = await db.select().from(instructores).where(eq(instructores.uid, uid));
-        if (insResult.length > 0) {
-          const instructorId = insResult[0].id;
-          const linked = await db.select().from(instructorFicha)
-            .where(and(eq(instructorFicha.instructorId, instructorId), eq(instructorFicha.fichaId, fId)));
-
-          if (linked.length === 0) {
-            await db.insert(instructorFicha).values({
-              instructorId,
-              fichaId: fId,
-              rolEnFicha: insResult[0].rol || 'Instructor Técnico'
-            });
-          }
-        }
-
+        // 2. Loop incoming ones
         for (const s of aprendices) {
-          const existingStudent = await db.select().from(aprendicesFichas)
-            .where(and(eq(aprendicesFichas.fichaId, fId), eq(aprendicesFichas.documento, s.documento)));
+          let memStudent = currentMemStudents.find(st => st.documento === s.documento);
+          
+          if (memStudent) {
+            const isPrevInactivo = memStudent.estadoAprendiz === 'Inactivo';
+            let hasChanges = isPrevInactivo ||
+              memStudent.nombre !== s.nombre ||
+              memStudent.correo !== s.correo ||
+              memStudent.telefono !== (s.telefono || null);
 
-          if (existingStudent.length > 0) {
-            await db.update(aprendicesFichas)
-              .set({
-                nombre: s.nombre,
-                correo: s.correo,
-                telefono: s.telefono || null,
-                nivelRiesgo: s.nivelRiesgo,
-                ultimoAcceso: s.ultimoAcceso,
-                diasSinAcceso: s.diasSinAcceso,
-                puntajeRiesgo: s.puntajeRiesgo,
-                evidencias: s.evidencias || {}
-              })
-              .where(eq(aprendicesFichas.id, existingStudent[0].id));
+            memStudent.nombre = s.nombre;
+            memStudent.correo = s.correo;
+            memStudent.telefono = s.telefono || null;
+            memStudent.nivelRiesgo = s.nivelRiesgo || memStudent.nivelRiesgo;
+            memStudent.ultimoAcceso = s.ultimoAcceso || memStudent.ultimoAcceso;
+            memStudent.diasSinAcceso = s.diasSinAcceso !== undefined ? s.diasSinAcceso : memStudent.diasSinAcceso;
+            memStudent.puntajeRiesgo = s.puntajeRiesgo !== undefined ? s.puntajeRiesgo : memStudent.puntajeRiesgo;
+
+            const currentEv = memStudent.evidencias || {};
+            const incomingEv = s.evidencias || {};
+            memStudent.evidencias = Object.keys(incomingEv).length > 0 ? { ...currentEv, ...incomingEv } : currentEv;
+
+            memStudent.fechaUltimoReporte = nowStr;
+
+            if (isPrevInactivo) {
+              memStudent.estadoAprendiz = 'Activo';
+              memStudent.observacionEstado = `Reactivado automáticamente. Volvió a aparecer en el reporte del ${nowStr}`;
+              memStudent.fechaInactivacion = null;
+              memSummary.reactivados++;
+            } else if (hasChanges) {
+              memSummary.actualizados++;
+            } else {
+              memSummary.conservados++;
+            }
           } else {
-            await db.insert(aprendicesFichas)
-              .values({
-                fichaId: fId,
-                documento: s.documento,
-                nombre: s.nombre,
-                correo: s.correo,
-                telefono: s.telefono || null,
-                nivelRiesgo: s.nivelRiesgo,
-                estadoIntervencion: 'Sin intervención',
-                ultimoAcceso: s.ultimoAcceso,
-                diasSinAcceso: s.diasSinAcceso,
-                puntajeRiesgo: s.puntajeRiesgo,
-                evidencias: s.evidencias || {}
-              });
+            // New learner
+            const newMem: any = {
+              id: memoryDb.aprendicesFichas.length + 1,
+              fichaId: memFicha.id,
+              documento: s.documento,
+              nombre: s.nombre,
+              correo: s.correo,
+              telefono: s.telefono || null,
+              nivelRiesgo: s.nivelRiesgo || 'Bajo',
+              estadoIntervencion: 'Sin intervención',
+              ultimoAcceso: s.ultimoAcceso || null,
+              diasSinAcceso: s.diasSinAcceso || null,
+              puntajeRiesgo: s.puntajeRiesgo || 0,
+              evidencias: s.evidencias || {},
+              estadoAprendiz: 'Activo',
+              observacionEstado: null,
+              fechaUltimoReporte: nowStr,
+              fechaInactivacion: null,
+              createdAt: new Date()
+            };
+            memoryDb.aprendicesFichas.push(newMem);
+            memSummary.nuevos++;
           }
         }
-      } catch (dbErr: any) {
-        console.warn('PostgreSQL syncLearnersToDb offline bypass executed:', dbErr.message);
+
+        // 3. Mark as inactive those that were not in this incoming report
+        for (const localSt of currentMemStudents) {
+          const comesInReport = aprendices.some((s: any) => s.documento === localSt.documento);
+          if (!comesInReport && localSt.estadoAprendiz !== 'Inactivo') {
+            localSt.estadoAprendiz = 'Inactivo';
+            localSt.fechaInactivacion = nowStr;
+            localSt.observacionEstado = `No aparece en el último reporte cargado. Posible cancelación, retiro voluntario o novedad administrativa.`;
+            memSummary.inactivados++;
+          }
+        }
+      }
+
+      // Sincronización en Postgres DB
+      let pgSummary = { nuevos: 0, actualizados: 0, conservados: 0, inactivados: 0, reactivados: 0 };
+      let finalSummary = memSummary;
+
+      if (pgFichaId) {
+        try {
+          const fId = pgFichaId;
+          const currentPgStudents = await db.select().from(aprendicesFichas).where(eq(aprendicesFichas.fichaId, fId));
+
+          for (const s of aprendices) {
+            const existingStudent = currentPgStudents.find(st => st.documento === s.documento);
+
+            if (existingStudent) {
+              const isPrevInactivo = existingStudent.estadoAprendiz === 'Inactivo';
+              const hasChanges = isPrevInactivo ||
+                existingStudent.nombre !== s.nombre ||
+                existingStudent.correo !== s.correo ||
+                existingStudent.telefono !== (s.telefono || null);
+
+              const currentEv = (existingStudent.evidencias as Record<string, any>) || {};
+              const incomingEv = s.evidencias || {};
+              const finalEv = Object.keys(incomingEv).length > 0 ? { ...currentEv, ...incomingEv } : currentEv;
+
+              await db.update(aprendicesFichas)
+                .set({
+                  nombre: s.nombre,
+                  correo: s.correo,
+                  telefono: s.telefono || null,
+                  nivelRiesgo: s.nivelRiesgo || existingStudent.nivelRiesgo,
+                  ultimoAcceso: s.ultimoAcceso || existingStudent.ultimoAcceso,
+                  diasSinAcceso: s.diasSinAcceso !== undefined ? s.diasSinAcceso : existingStudent.diasSinAcceso,
+                  puntajeRiesgo: s.puntajeRiesgo !== undefined ? s.puntajeRiesgo : existingStudent.puntajeRiesgo,
+                  evidencias: finalEv,
+                  estadoAprendiz: 'Activo',
+                  observacionEstado: isPrevInactivo 
+                    ? `Reactivado automáticamente. Volvió a aparecer en el reporte del ${nowStr}`
+                    : existingStudent.observacionEstado,
+                  fechaInactivacion: isPrevInactivo ? null : existingStudent.fechaInactivacion,
+                  fechaUltimoReporte: nowStr
+                })
+                .where(eq(aprendicesFichas.id, existingStudent.id));
+
+              if (isPrevInactivo) {
+                pgSummary.reactivados++;
+              } else if (hasChanges) {
+                pgSummary.actualizados++;
+              } else {
+                pgSummary.conservados++;
+              }
+            } else {
+              // Create brand new
+              await db.insert(aprendicesFichas)
+                .values({
+                  fichaId: fId,
+                  documento: s.documento,
+                  nombre: s.nombre,
+                  correo: s.correo,
+                  telefono: s.telefono || null,
+                  nivelRiesgo: s.nivelRiesgo || 'Bajo',
+                  estadoIntervencion: 'Sin intervención',
+                  ultimoAcceso: s.ultimoAcceso || null,
+                  diasSinAcceso: s.diasSinAcceso || null,
+                  puntajeRiesgo: s.puntajeRiesgo || 0,
+                  evidencias: s.evidencias || {},
+                  estadoAprendiz: 'Activo',
+                  observacionEstado: null,
+                  fechaUltimoReporte: nowStr,
+                  fechaInactivacion: null
+                });
+              pgSummary.nuevos++;
+            }
+          }
+
+          // Inactivate missing ones
+          for (const localSt of currentPgStudents) {
+            const comesInReport = aprendices.some((s: any) => s.documento === localSt.documento);
+            if (!comesInReport && localSt.estadoAprendiz !== 'Inactivo') {
+              await db.update(aprendicesFichas)
+                .set({
+                  estadoAprendiz: 'Inactivo',
+                  fechaInactivacion: nowStr,
+                  observacionEstado: `No aparece en el último reporte cargado. Posible cancelación, retiro voluntario o novedad administrativa.`
+                })
+                .where(eq(aprendicesFichas.id, localSt.id));
+              pgSummary.inactivados++;
+            }
+          }
+
+          finalSummary = pgSummary;
+        } catch (dbErr: any) {
+          console.warn('PostgreSQL syncLearnersToDb offline bypass executed:', dbErr.message);
+        }
       }
 
       return res.json({
         success: true,
-        fichaId: memFicha.id,
-        count: aprendices.length
+        fichaId: memFicha ? memFicha.id : pgFichaId,
+        summary: finalSummary
       });
     } catch (err: any) {
       console.error('Error synchronizing learner data:', err);

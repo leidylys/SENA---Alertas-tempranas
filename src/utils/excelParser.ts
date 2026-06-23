@@ -748,6 +748,7 @@ export interface ReporteAprendicesResult {
   programaFormacion: string;
   nivel: 'Técnico' | 'Tecnólogo';
   aprendices: Aprendiz[];
+  totalRows?: number;
 }
 
 /**
@@ -765,25 +766,27 @@ export function parseReporteAprendicesExcel(rows2D: any[][]): ReporteAprendicesR
       const valStr = String(row[c] || '').trim();
       const valCleaned = cleanKey(valStr);
       
-      if (valCleaned.includes('fichadecaracterizacion') || valCleaned === 'ficha' || valCleaned === 'fichadecaracterizacion') {
+      if (valCleaned.includes('fichadecaracterizacion') || valCleaned === 'ficha' || valCleaned.includes('ficha')) {
+        let textToParse = '';
         const nextVal = row[c + 1] ? String(row[c + 1]).trim() : '';
         if (nextVal) {
-          const hyphenIndex = nextVal.indexOf('-');
-          if (hyphenIndex !== -1) {
-            fichaCodigo = nextVal.substring(0, hyphenIndex).trim();
-            const prog = nextVal.substring(hyphenIndex + 1).trim().replace(/\.$/, '');
-            if (prog) {
+          textToParse = nextVal;
+        } else {
+          textToParse = valStr;
+        }
+
+        if (textToParse) {
+          const numMatch = textToParse.match(/(\d{6,9})/);
+          if (numMatch) {
+            fichaCodigo = numMatch[1];
+            let prog = textToParse.replace(fichaCodigo, '').trim();
+            prog = prog.replace(/^[-\s:()]+/, '').replace(/[-\s()]+$/, '').trim();
+            prog = prog.replace(/^(ficha de caracterizacion|ficha):?/i, '').trim();
+            if (prog && prog.length > 3) {
               programaFormacion = prog;
             }
-          } else {
-            const match = nextVal.match(/^(\d{6,9})\b/);
-            if (match) {
-              fichaCodigo = match[1];
-              const remaining = nextVal.replace(fichaCodigo, '').replace(/^[-\s]+/, '').trim().replace(/\.$/, '');
-              if (remaining) programaFormacion = remaining;
-            } else {
-              fichaCodigo = nextVal;
-            }
+          } else if (textToParse !== valStr) {
+            fichaCodigo = textToParse;
           }
         }
       }
@@ -792,14 +795,22 @@ export function parseReporteAprendicesExcel(rows2D: any[][]): ReporteAprendicesR
 
   // Fallback Ficha code if we can't find label but can find any 6-9 digit number in top cells
   if (!fichaCodigo) {
-    for (let r = 0; r < Math.min(10, rows2D.length); r++) {
+    for (let r = 0; r < Math.min(15, rows2D.length); r++) {
       const row = rows2D[r] || [];
-      const cellText = row.map(cell => String(cell || '').trim());
-      const foundNumeric = cellText.find(txt => /^\d{6,9}$/.test(txt));
-      if (foundNumeric) {
-        fichaCodigo = foundNumeric;
-        break;
+      for (let c = 0; c < row.length; c++) {
+        const txt = String(row[c] || '').trim();
+        const match = txt.match(/(\d{6,9})/);
+        if (match) {
+          fichaCodigo = match[1];
+          let prog = txt.replace(fichaCodigo, '').trim();
+          prog = prog.replace(/^[-\s:()]+/, '').replace(/[-\s()]+$/, '').trim();
+          if (prog && prog.length > 3) {
+            programaFormacion = prog;
+          }
+          break;
+        }
       }
+      if (fichaCodigo) break;
     }
   }
 
@@ -811,19 +822,65 @@ export function parseReporteAprendicesExcel(rows2D: any[][]): ReporteAprendicesR
     nivel = 'Tecnólogo';
   }
 
-  // 2. Find the table header containing Tipo de Documento or Número de Documento and Correo Electronico etc.
+  // 2. Find the table header using a robust scoring system to avoid top-banner false positives
   let headerRowIdx = -1;
-  for (let r = 0; r < rows2D.length; r++) {
+  let maxScore = -1;
+
+  for (let r = 0; r < Math.min(50, rows2D.length); r++) {
     const row = rows2D[r] || [];
     const normalized = row.map(cell => cleanKey(cell));
     
-    const hasDoc = normalized.some(c => c === 'numerodedocumento' || c === 'documentodeidentidad' || c === 'documento' || c === 'identificacion' || c.includes('numerodedocumento'));
-    const hasCorreo = normalized.some(c => c.includes('correoelectronico') || c === 'correo' || c === 'email' || c === 'correoelectronico');
-    const hasTipoDoc = normalized.some(c => c.includes('tipodedocumento') || c === 'tipodoc');
+    let score = 0;
+    const hasDoc = normalized.some(c => 
+      ((c === 'numerodedocumento' || 
+        c === 'documentodeidentidad' || 
+        c === 'documento' || 
+        c === 'identificacion' || 
+        c.includes('numerodedocumento') || 
+        c.includes('documento') || 
+        c.includes('identificacion') || 
+        c.includes('numdoc') || 
+        c.includes('nrodoc') || 
+        c.includes('nodoc') ||
+        c === 'cc' ||
+        c === 'id' ||
+        c === 'doc' ||
+        c.includes('doc') ||
+        c.includes('cedula')) &&
+       !c.includes('tipo') &&
+       !c.includes('clase'))
+    );
+    if (hasDoc) score += 3.5;
 
-    if ((hasDoc && hasCorreo) || (hasDoc && hasTipoDoc)) {
+    const hasName = normalized.some(c => 
+      ((c === 'nombre' || 
+        c === 'nombres' || 
+        c.includes('nombre') || 
+        c.includes('apellido') || 
+        c.includes('completo') || 
+        c.includes('estudiante') || 
+        c.includes('aprendiz')) &&
+       !c.includes('programa') &&
+       !c.includes('instructor'))
+    );
+    if (hasName) score += 2;
+
+    const hasCorreo = normalized.some(c => c.includes('correo') || c.includes('email') || c.includes('mail'));
+    if (hasCorreo) score += 1.5;
+
+    const hasTipoDoc = normalized.some(c => c.includes('tipodedocumento') || c.includes('tipodoc') || c === 'td' || c.includes('tipodedoc') || c.includes('tipo'));
+    if (hasTipoDoc) score += 1;
+
+    const hasCelular = normalized.some(c => c.includes('celular') || c.includes('telefono') || c.includes('movil') || c === 'tel' || c === 'telf');
+    if (hasCelular) score += 1;
+
+    const hasEstado = normalized.some(c => c === 'estado' || c === 'status' || c === 'situacion' || c.includes('estado'));
+    if (hasEstado) score += 1;
+
+    // Must match at least document and name or document and email (score >= 4.5) to be considered a true tabular header
+    if (row.length >= 3 && score > maxScore && score >= 4.5) {
+      maxScore = score;
       headerRowIdx = r;
-      break;
     }
   }
 
@@ -834,13 +891,64 @@ export function parseReporteAprendicesExcel(rows2D: any[][]): ReporteAprendicesR
     const cleanHeaders = headerRow.map(h => cleanKey(h));
 
     const colIndices = {
-      tipoDoc: cleanHeaders.findIndex(h => h.includes('tipodedocumento') || h === 'tipodoc' || h.includes('tipodedoc')),
-      documento: cleanHeaders.findIndex(h => h.includes('numerodedocumento') || h === 'documento' || h === 'identificacion' || h.includes('num_doc') || h.includes('documentodeidentidad')),
-      nombre: cleanHeaders.findIndex(h => h === 'nombre' || h === 'nombres' || h.includes('primernombre')),
-      apellidos: cleanHeaders.findIndex(h => h === 'apellidos' || h === 'apellido'),
-      celular: cleanHeaders.findIndex(h => h === 'celular' || h === 'telefono' || h.includes('movil') || h === 'tel'),
-      correo: cleanHeaders.findIndex(h => h.includes('correoelectronico') || h === 'correo' || h === 'email' || h === 'mail'),
-      estado: cleanHeaders.findIndex(h => h === 'estado' || h === 'status' || h === 'situacion')
+      tipoDoc: cleanHeaders.findIndex(h => h.includes('tipodedocumento') || h.includes('tipodoc') || h === 'td' || h.includes('tipodedoc') || h.includes('tipo')),
+      documento: cleanHeaders.findIndex(h => 
+        (h.includes('documento') || 
+         h.includes('identificacion') || 
+         h.includes('cedula') || 
+         h === 'cc' || 
+         h === 'id' || 
+         h.includes('numdoc') || 
+         h.includes('nrodoc') || 
+         h.includes('nodoc') || 
+         h.includes('nrodedocumento') || 
+         h.includes('numerodedoc') ||
+         h.includes('documentodeidentidad') ||
+         h.includes('num_doc') ||
+         h.includes('doc') ||
+         h.includes('identifica')) &&
+        !h.includes('tipo') &&
+        !h.includes('clase')
+      ),
+      nombre: cleanHeaders.findIndex(h => 
+        (h === 'nombre' || 
+         h === 'nombres' || 
+         h.includes('primernombre') || 
+         h.includes('nombrecompleto') || 
+         h.includes('nombresyapellidos') || 
+         h.includes('estudiante') ||
+         h.includes('nombre') ||
+         h.includes('aprendiz')) &&
+        !h.includes('programa') &&
+        !h.includes('instructor')
+      ),
+      apellidos: cleanHeaders.findIndex(h => 
+        (h === 'apellidos' || 
+         h === 'apellido' || 
+         h.includes('primerapellido') || 
+         h.includes('segundoapellido') ||
+         h.includes('apellido')) &&
+        !h.includes('programa') &&
+        !h.includes('instructor')
+      ),
+      celular: cleanHeaders.findIndex(h => 
+        h.includes('celular') || 
+        h.includes('telefono') || 
+        h.includes('movil') || 
+        h === 'tel' || 
+        h === 'telf'
+      ),
+      correo: cleanHeaders.findIndex(h => 
+        h.includes('correo') || 
+        h.includes('email') || 
+        h.includes('mail')
+      ),
+      estado: cleanHeaders.findIndex(h => 
+        h === 'estado' || 
+        h === 'status' || 
+        h === 'situacion' || 
+        h.includes('estado')
+      )
     };
 
     for (let r = headerRowIdx + 1; r < rows2D.length; r++) {
@@ -854,10 +962,17 @@ export function parseReporteAprendicesExcel(rows2D: any[][]): ReporteAprendicesR
       };
 
       const docVal = getVal(colIndices.documento);
-      const firstNames = getVal(colIndices.nombre);
+      let firstNames = getVal(colIndices.nombre);
       const lastNames = getVal(colIndices.apellidos);
 
-      if (!docVal || (!firstNames && !lastNames)) continue;
+      // Verify that this row contains a valid document number to avoid parsing blank filler rows at bottom of sheet
+      if (!docVal || !/^\d{4,15}$/.test(docVal.replace(/[^0-9]/g, ''))) {
+        continue;
+      }
+
+      if (!firstNames && !lastNames) {
+        firstNames = `Aprendiz ${docVal}`;
+      }
 
       const nombreCompleto = `${firstNames} ${lastNames}`.trim().replace(/\s+/g, ' ');
       const correoVal = getVal(colIndices.correo) || `${docVal}@sena.edu.co`;
@@ -884,6 +999,7 @@ export function parseReporteAprendicesExcel(rows2D: any[][]): ReporteAprendicesR
     fichaCodigo: fichaCodigo || '',
     programaFormacion,
     nivel,
-    aprendices
+    aprendices,
+    totalRows: rows2D.length
   };
 }

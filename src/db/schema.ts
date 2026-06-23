@@ -65,6 +65,10 @@ export const aprendicesFichas = pgTable('aprendices_fichas', {
   diasSinAcceso: integer('dias_sin_acceso'),
   puntajeRiesgo: integer('puntaje_riesgo').notNull().default(0),
   evidencias: jsonb('evidencias').default({}).notNull(), // Map of grade statuses: { "Evid 1": "A", "Evid 2": "D" }
+  estadoAprendiz: text('estado_aprendiz').notNull().default('Activo'), // 'Activo' or 'Inactivo'
+  observacionEstado: text('observacion_estado'),
+  fechaUltimoReporte: text('fecha_ultimo_reporte'),
+  fechaInactivacion: text('fecha_inactivacion'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 

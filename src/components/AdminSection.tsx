@@ -133,6 +133,7 @@ export default function AdminSection({
   const batchInputRef = useRef<HTMLInputElement>(null);
   const [isProcessingBatch, setIsProcessingBatch] = useState(false);
   const [batchSyncStatus, setBatchSyncStatus] = useState<string | null>(null);
+  const [batchSyncSummary, setBatchSyncSummary] = useState<any[] | null>(null);
 
   const [instructorsList, setInstructorsList] = useState<any[]>([]);
    const [editingPassRow, setEditingPassRow] = useState<number | null>(null);
@@ -670,8 +671,10 @@ export default function AdminSection({
     }
 
     setIsProcessingBatch(true);
+    setBatchSyncSummary(null); // Clear previous summaries
     let successfullySynced = 0;
     let failedSynced = 0;
+    const summaries: any[] = [];
 
     for (const item of pending) {
       if (!item.fichaCodigo.trim()) {
@@ -681,6 +684,19 @@ export default function AdminSection({
           errorMsg: 'Código de Ficha requerido'
         } : f));
         failedSynced++;
+        summaries.push({
+          fileName: item.fileName,
+          fichaCodigo: item.fichaCodigo || 'Desconocido',
+          totalRows: 0,
+          validCount: 0,
+          nuevos: 0,
+          actualizados: 0,
+          conservados: 0,
+          inactivados: 0,
+          reactivados: 0,
+          status: 'error',
+          errorMsg: 'Código de Ficha requerido'
+        });
         continue;
       }
 
@@ -691,7 +707,7 @@ export default function AdminSection({
         const result = parseReporteAprendicesExcel(rows2D);
 
         // Sync to Cloud SQL via API Route
-        await syncLearnersToDb(
+        const syncResponse = await syncLearnersToDb(
           authToken,
           item.fichaCodigo,
           item.programaFormacion,
@@ -703,15 +719,43 @@ export default function AdminSection({
 
         setBatchFiles(prev => prev.map(f => f.id === item.id ? { ...f, status: 'sincronizado', errorMsg: undefined } : f));
         successfullySynced++;
+
+        // Save detailed results for the ledger report card
+        summaries.push({
+          fileName: item.fileName,
+          fichaCodigo: item.fichaCodigo,
+          totalRows: result.totalRows || 0,
+          validCount: result.aprendices.length || 0,
+          nuevos: syncResponse.summary?.nuevos ?? 0,
+          actualizados: syncResponse.summary?.actualizados ?? 0,
+          conservados: syncResponse.summary?.conservados ?? 0,
+          inactivados: syncResponse.summary?.inactivados ?? 0,
+          reactivados: syncResponse.summary?.reactivados ?? 0,
+          status: 'success'
+        });
       } catch (err: any) {
         console.error(err);
         setBatchFiles(prev => prev.map(f => f.id === item.id ? { ...f, status: 'error', errorMsg: err.message || 'Error de conexión' } : f));
         failedSynced++;
+        summaries.push({
+          fileName: item.fileName,
+          fichaCodigo: item.fichaCodigo,
+          totalRows: 0,
+          validCount: 0,
+          nuevos: 0,
+          actualizados: 0,
+          conservados: 0,
+          inactivados: 0,
+          reactivados: 0,
+          status: 'error',
+          errorMsg: err.message || 'Error general en el proceso'
+        });
       }
     }
 
     setIsProcessingBatch(false);
-    setBatchSyncStatus(`Proceso de sincronización completado. Se crearon/actualizaron ${successfullySynced} fichas con sus respectivos aprendices. Fichas con error: ${failedSynced}.`);
+    setBatchSyncSummary(summaries);
+    setBatchSyncStatus(`Proceso de sincronización completado. Se procesaron ${pending.length} archivo(s): ${successfullySynced} cargados con éxito, ${failedSynced} fallidos.`);
     onSuccessSync(); // Refresh lists!
   };
 
@@ -1342,6 +1386,140 @@ export default function AdminSection({
                     </>
                   )}
                 </button>
+              </div>
+            </div>
+          )}
+
+          {/* DETAILED RESULTS SUMMARY LEDGER FOR APPRENTICES LOAD */}
+          {batchSyncSummary && batchSyncSummary.length > 0 && (
+            <div className="border border-slate-200 rounded-xl p-5 bg-slate-50/50 space-y-4 animate-fade-in" id="batch-learners-summary-ledger">
+              <div className="flex items-center justify-between border-b border-slate-150 pb-2">
+                <div className="flex items-center gap-2">
+                  <span className="p-1 bg-[#39A900]/10 text-[#39A900] rounded-lg">
+                    <FileCheck className="w-4 h-4" />
+                  </span>
+                  <div>
+                    <h4 className="text-xs font-extrabold text-slate-800 uppercase tracking-wide">
+                      Resumen Analítico de la Carga de Aprendices
+                    </h4>
+                    <p className="text-[10px] text-slate-500">Métricas acumuladas del lote de archivos procesados incrementalmente</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setBatchSyncSummary(null)}
+                  className="text-[10px] font-bold text-slate-400 hover:text-slate-600 hover:underline"
+                >
+                  Limpiar Resumen
+                </button>
+              </div>
+
+              <div className="space-y-4">
+                {batchSyncSummary.map((sum, index) => {
+                  const hasFewLearners = sum.status === 'success' && sum.validCount <= 3 && sum.totalRows > 10;
+                  const totalSync = sum.nuevos + sum.actualizados + sum.conservados + sum.reactivados;
+                  const ignoredRows = Math.max(0, sum.totalRows - sum.validCount);
+
+                  return (
+                    <div 
+                      key={index}
+                      className={`bg-white rounded-xl border p-4 space-y-3.5 shadow-3xs hover:shadow-2xs transition-all ${
+                        sum.status === 'success' ? 'border-slate-200' : 'border-rose-200 bg-rose-50/10'
+                      }`}
+                    >
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                        <div className="space-y-0.5">
+                          <span className="text-[10px] uppercase font-black tracking-wider text-slate-400">Reporte Procesado</span>
+                          <h5 className="text-xs font-bold text-slate-800 flex items-center gap-1.5 flex-wrap">
+                            <span className="truncate max-w-xs">{sum.fileName}</span>
+                            <span className="bg-slate-100 text-slate-700 px-2 py-0.5 rounded text-[10px] font-mono font-bold border border-slate-200">
+                              Ficha {sum.fichaCodigo}
+                            </span>
+                          </h5>
+                        </div>
+
+                        {sum.status === 'success' ? (
+                          <span className="sm:self-center inline-flex items-center gap-1 text-[10px] font-extrabold bg-emerald-50 text-emerald-800 border border-emerald-150 px-2 py-0.5 rounded-lg">
+                            Sincronización Exitosa
+                          </span>
+                        ) : (
+                          <span className="sm:self-center inline-flex items-center gap-1 text-[10px] font-extrabold bg-rose-50 text-rose-800 border border-rose-150 px-2 py-0.5 rounded-lg">
+                            Error en Archivo
+                          </span>
+                        )}
+                      </div>
+
+                      {sum.status === 'success' ? (
+                        <>
+                          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
+                            <div className="p-2.5 bg-slate-50 border border-slate-150 rounded-lg text-center">
+                              <span className="block text-[9px] text-slate-400 font-extrabold uppercase">Filas Leídas</span>
+                              <strong className="text-sm text-slate-700 font-extrabold">{sum.totalRows}</strong>
+                            </div>
+
+                            <div className="p-2.5 bg-emerald-50/30 border border-emerald-100 rounded-lg text-center">
+                              <span className="block text-[9px] text-emerald-700 font-extrabold uppercase" title="Aprendices válidos extraídos">Válidos</span>
+                              <strong className="text-sm text-emerald-800 font-extrabold">{sum.validCount}</strong>
+                            </div>
+
+                            <div className="p-2.5 bg-blue-50/40 border border-blue-100 rounded-lg text-center">
+                              <span className="block text-[9px] text-blue-700 font-extrabold uppercase" title="Nuevos alumnos creados en Postgres">Nuevos</span>
+                              <strong className="text-sm text-blue-800 font-extrabold">{sum.nuevos}</strong>
+                            </div>
+
+                            <div className="p-2.5 bg-amber-50/40 border border-amber-100 rounded-lg text-center">
+                              <span className="block text-[9px] text-amber-700 font-extrabold uppercase" title="Datos básicos actualizados">Actualizados</span>
+                              <strong className="text-sm text-amber-800 font-extrabold">{sum.actualizados}</strong>
+                            </div>
+
+                            <div className="p-2.5 bg-purple-50/40 border border-purple-100 rounded-lg text-center">
+                              <span className="block text-[9px] text-purple-700 font-extrabold uppercase" title="Alumnos reactivados tras inactividad">Reactivados</span>
+                              <strong className="text-sm text-purple-800 font-extrabold">{sum.reactivados}</strong>
+                            </div>
+
+                            <div className="p-2.5 bg-rose-50/30 border border-rose-100 rounded-lg text-center">
+                              <span className="block text-[9px] text-rose-705 font-extrabold uppercase" title="Marcados como inactivos (No presentes hoy)">Inactivados</span>
+                              <strong className="text-sm text-rose-800 font-extrabold">{sum.inactivados}</strong>
+                            </div>
+
+                            <div className="p-2.5 bg-slate-50 border border-slate-155 rounded-lg text-center">
+                              <span className="block text-[9px] text-slate-400 font-extrabold uppercase" title="Filas de logo, títulos o en blanco">Filas Ignoradas</span>
+                              <strong className="text-sm text-slate-600 font-extrabold">{ignoredRows}</strong>
+                            </div>
+                          </div>
+
+                          <div className="text-[10px] text-slate-500 flex items-center justify-between border-t border-slate-100 pt-2 font-medium">
+                            <span>Sincronizados en base de datos: <strong>{totalSync}</strong> aprendices</span>
+                            <span>Filas sin aprendices válidos: <strong>{ignoredRows}</strong> ignoradas de forma controlada</span>
+                          </div>
+
+                          {/* WARNING IF DETECTED VERY FEW ALUMNI */}
+                          {hasFewLearners && (
+                            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 flex items-start gap-2 text-[10px] text-amber-900 mt-2">
+                              <AlertTriangle className="w-4 h-4 text-amber-750 shrink-0 mt-0.5" />
+                              <div className="space-y-0.5">
+                                <span className="font-extrabold">⚠️ Alerta de Baja Detección de Aprendices:</span>
+                                <p className="text-slate-655 leading-relaxed font-normal">
+                                  Se han detectado únicamente {sum.validCount} aprendices de {sum.totalRows} filas totales en el archivo. Por favor, verifique si este archivo es efectivamente el reporte de aprendices (Matrícula / Calificaciones) o si ha seleccionado una pestaña o un reporte alternativo. El parser requiere columnas claras del listado (como Documento y Nombre).
+                                </p>
+                              </div>
+                            </div>
+                          )}
+                        </>
+                      ) : (
+                        <div className="bg-rose-50 border border-rose-200 rounded-lg p-3 flex items-start gap-2 text-[11px] text-rose-900">
+                          <AlertTriangle className="w-4 h-4 text-rose-700 shrink-0 mt-0.5" />
+                          <div className="space-y-0.5">
+                            <span className="font-extrabold">Fallo en Procesamiento:</span>
+                            <p className="text-slate-655 font-normal leading-relaxed">
+                              {sum.errorMsg || 'La estructura de cabeceras de este archivo no contiene las columnas necesarias para asociar aprendices a la ficha.'}
+                            </p>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             </div>
           )}
