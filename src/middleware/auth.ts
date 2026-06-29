@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { adminAuth } from '../lib/firebase-admin.ts';
 import { DecodedIdToken } from 'firebase-admin/auth';
+import { getApps } from 'firebase-admin/app';
 
 export interface AuthRequest extends Request {
   user?: DecodedIdToken;
@@ -11,64 +12,86 @@ export const requireAuth = async (
   res: Response,
   next: NextFunction
 ) => {
+  const isDev = process.env.NODE_ENV !== 'production';
+  if (isDev) {
+    console.log(`[DEV LOG] AUTH_STEP: request_received | Path: ${req.path}`);
+  }
+
   const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({ error: 'Unauthorized: Missing token' });
+  if (!authHeader) {
+    if (isDev) {
+      console.log(`[DEV LOG] AUTH_STEP: token_present false | Motivo: Token ausente`);
+    }
+    return res.status(401).json({ error: 'Unauthorized: Token ausente' });
   }
 
-  const token = authHeader.split('Bearer ')[1];
-
-  // Bypass option for testing and preview environments
-  if (token === 'demo-admin') {
-    req.user = {
-      uid: 'demo-admin-uid-123',
-      email: 'ing.deliamarherazo@gmail.com',
-      name: 'Delia Amar Herazo',
-      picture: '',
-      auth_time: Math.floor(Date.now() / 1000),
-      iss: 'https://securetoken.google.com/demo',
-      aud: 'demo',
-      sub: 'demo-admin-uid-123',
-      exp: Math.floor(Date.now() / 1000) + 3600,
-      firebase: {
-        identities: {},
-        sign_in_provider: 'google.com'
-      }
-    } as any;
-    return next();
+  if (!authHeader.startsWith('Bearer ')) {
+    if (isDev) {
+      console.log(`[DEV LOG] AUTH_STEP: token_present false | Motivo: Header Authorization mal formado`);
+    }
+    return res.status(401).json({ error: 'Unauthorized: Header Authorization mal formado' });
   }
 
-  if (token && token.startsWith('demo-instructor:')) {
-    const email = token.substring('demo-instructor:'.length);
-    const safeName = email.split('@')[0]
-      .split('.')
-      .map(part => part.charAt(0).toUpperCase() + part.slice(1))
-      .join(' ');
-    
-    req.user = {
-      uid: 'demo-ins-uid-' + Math.abs(email.split('').reduce((hash, char) => (hash << 5) - hash + char.charCodeAt(0), 0)),
-      email: email,
-      name: safeName,
-      picture: '',
-      auth_time: Math.floor(Date.now() / 1000),
-      iss: 'https://securetoken.google.com/demo',
-      aud: 'demo',
-      sub: 'demo-ins-uid-hash',
-      exp: Math.floor(Date.now() / 1000) + 3600,
-      firebase: {
-        identities: {},
-        sign_in_provider: 'google.com'
-      }
-    } as any;
-    return next();
+  const tokenParts = authHeader.split('Bearer ');
+  const rawToken = tokenParts[1];
+  const token = rawToken ? rawToken.trim() : '';
+
+  if (!token) {
+    if (isDev) {
+      console.log(`[DEV LOG] AUTH_STEP: token_present false | Motivo: Token vacío`);
+    }
+    return res.status(401).json({ error: 'Unauthorized: Token vacío' });
+  }
+
+  const tokenLength = token.length;
+  const startsWithEy = token.startsWith('eyJ');
+
+  if (isDev) {
+    console.log(`[DEV LOG] AUTH_STEP: token_present true | token_length: ${tokenLength} | token_starts_with_eyJ: ${startsWithEy}`);
+    console.log(`[DEV LOG] AUTH_STEP: firebase_admin_verify_start`);
+  }
+
+  // Get project ID used by Admin SDK if possible
+  const firebaseAdminProjectId = (process.env.FIREBASE_PROJECT_ID || '').trim() || 'fast-hawk-0dzmz';
+
+  // Check if Firebase Admin is properly initialized
+  if (!getApps().length) {
+    if (isDev) {
+      console.log(`[DEV LOG] AUTH_STEP: firebase_admin_verify_error | Firebase Admin mal inicializado`);
+    }
+    return res.status(500).json({ error: 'Unauthorized: Firebase Admin mal inicializado' });
+  }
+
+  if (!firebaseAdminProjectId) {
+    if (isDev) {
+      console.log(`[DEV LOG] AUTH_STEP: firebase_admin_verify_error | Firebase Admin sin projectId`);
+    }
+    return res.status(500).json({ error: 'Unauthorized: Firebase Admin sin projectId' });
   }
 
   try {
     const decodedToken = await adminAuth.verifyIdToken(token);
     req.user = decodedToken;
+    if (isDev) {
+      console.log(`[DEV LOG] AUTH_STEP: firebase_admin_verify_success | email del token: ${decodedToken.email || 'no-email'}`);
+    }
     next();
-  } catch (error) {
+  } catch (error: any) {
+    const errorCode = error.code || 'unknown';
+    const errorMessage = error.message || '';
+    
+    if (isDev) {
+      console.log(`[DEV LOG] AUTH_STEP: firebase_admin_verify_error:
+        - error.code: ${errorCode}
+        - error.message resumido: ${errorMessage.substring(0, 150)}
+        - firebase_admin_project_id: ${firebaseAdminProjectId}
+        - token_length: ${tokenLength}
+        - token_starts_with_eyJ: ${startsWithEy}`);
+    }
     console.error('Error verifying Firebase ID token:', error);
-    return res.status(401).json({ error: 'Unauthorized: Invalid token' });
+    return res.status(401).json({ 
+      error: `Unauthorized: Token no verificable por Firebase Admin (code: ${errorCode}, msg: ${errorMessage.substring(0, 80)})` 
+    });
   }
 };
+

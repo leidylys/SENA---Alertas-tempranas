@@ -1800,8 +1800,8 @@ export default function AdminSection({
                                     <span className="absolute right-1.5 top-1.5 text-[9.5px] text-slate-400 select-none">🔑</span>
                                   </div>
                                 ) : (
-                                  <span className="font-mono text-[11px] font-black bg-slate-100 px-2 py-0.5 rounded text-slate-600 border border-slate-150">
-                                    {ins.contrasena || 'sena123'}
+                                  <span className="font-mono text-[11px] font-bold bg-slate-100 px-2 py-0.5 rounded text-slate-500 border border-slate-150">
+                                    ••••••••
                                   </span>
                                 )}
                               </td>

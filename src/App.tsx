@@ -5,8 +5,8 @@ import UploadSection from './components/UploadSection';
 import AdminSection from './components/AdminSection';
 import FichasTable from './components/FichasTable';
 import DashboardPage from './pages/DashboardPage';
-import { signInWithPopup, signOut, onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
-import { auth, googleAuthProvider } from './lib/firebase.ts';
+import { signInWithPopup, signInWithRedirect, getRedirectResult, signOut, onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
+import { auth, googleAuthProvider, isFirebaseConfigured } from './lib/firebase.ts';
 import { 
   syncInstructor, 
   fetchFichas, 
@@ -89,22 +89,23 @@ export default function App() {
     setSavedFichasState(deduplicateFichas(fichasArray));
   };
   const savedFichas = savedFichasState;
-  const [availableDemoInstructors, setAvailableDemoInstructors] = useState<any[]>([]);
   const [fichasSearchQuery, setFichasSearchQuery] = useState('');
   const [fichasTabFilter, setFichasTabFilter] = useState<'todas' | 'activas' | 'futuras' | 'finalizadas'>('activas');
   const [isLoadingAuth, setIsLoadingAuth] = useState(true);
   const [isSyncingDb, setIsSyncingDb] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+  
+  // Diagnostic states
+  const [lastStep, setLastStep] = useState<string>('idle');
+  const [lastErrorCode, setLastErrorCode] = useState<string>('');
+  const [lastBackendStatus, setLastBackendStatus] = useState<number | null>(null);
+  const [resumeMessage, setResumeMessage] = useState<string>('');
   
   // UI views: 'fichas_list' | 'upload_new' | 'active_dashboard'
   const [currentView, setCurrentView] = useState<'fichas_list' | 'upload_new' | 'active_dashboard'>('fichas_list');
   const [fichaInfo, setFichaInfo] = useState<FichaInfo | null>(null);
   const [isSavingNewFicha, setIsSavingNewFicha] = useState(false);
   const [adminActiveTab, setAdminActiveTab] = useState<'programacion' | 'aprendices_masivo' | 'alertas_criticas'>('programacion');
-  const [loginEmail, setLoginEmail] = useState('');
-  const [loginPassword, setLoginPassword] = useState('');
-  const [loginError, setLoginError] = useState<string | null>(null);
-  const [isLoggingInWithPass, setIsLoggingInWithPass] = useState(false);
-  const [loginTab, setLoginTab] = useState<'individual' | 'rapido'>('individual'); // Con contraseña por defecto para mayor seguridad
   const [isEditingProfile, setIsEditingProfile] = useState(false);
   const [tempRol, setTempRol] = useState('');
   const [tempNombre, setTempNombre] = useState('');
@@ -112,30 +113,109 @@ export default function App() {
 
   const isUserAdmin = instructorProfile?.rol === 'Administrativo' || instructorProfile?.rol === 'Coordinación' || instructorProfile?.rol === 'Coordinacion';
 
-  // 1. Monitor Firebase Authentication State
+  // 1. Monitor Firebase Authentication State and Handle Redirects
   useEffect(() => {
+    if (!isFirebaseConfigured) {
+      setAuthError("La configuración de Firebase no está completa. Verifique las variables de entorno.");
+      setIsLoadingAuth(false);
+      return;
+    }
+
+    const checkRedirectResult = async () => {
+      console.log('[DEV LOG] LOGIN_STEP: redirect_result_start');
+      setLastStep('redirect_result_start');
+      try {
+        const result = await getRedirectResult(auth);
+        if (result) {
+          console.log('[DEV LOG] LOGIN_STEP: redirect_result_success');
+          setLastStep('redirect_result_success');
+          setResumeMessage(`Usuario redirect autenticado: ${result.user?.email || 'sin-correo'}`);
+        } else {
+          console.log('[DEV LOG] No active redirect result.');
+        }
+      } catch (err: any) {
+        const code = err.code || 'unknown';
+        const message = err.message || '';
+        console.error('[DEV LOG] LOGIN_STEP: redirect_result_error', err);
+        setLastStep('redirect_result_error');
+        setLastErrorCode(code);
+        setResumeMessage(`Error Redirect: ${message.substring(0, 100)}`);
+        
+        if (code === 'auth/api-key-not-valid') {
+          setAuthError('La API Key configurada no es válida para Firebase Authentication.');
+        } else if (code === 'auth/unauthorized-domain') {
+          setAuthError('El dominio actual no está autorizado en Firebase Authentication.');
+        } else {
+          setAuthError(`Error de redirección: ${message}`);
+        }
+      }
+    };
+
+    checkRedirectResult();
+
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       if (user) {
         setCurrentUser(user);
+        console.log('[DEV LOG] email autenticado:', user.email);
+        setResumeMessage(`Autenticado con Firebase: ${user.email}`);
+        
         try {
+          console.log('[DEV LOG] LOGIN_STEP: get_id_token_start');
+          setLastStep('get_id_token_start');
           const token = await user.getIdToken();
+          
+          console.log('[DEV LOG] LOGIN_STEP: get_id_token_success');
+          setLastStep('get_id_token_success');
           setAuthToken(token);
           
           // Verify instructor profile in Cloud SQL
+          console.log('[DEV LOG] LOGIN_STEP: sync_start | endpoint llamado: POST /api/instructor/sync');
+          setLastStep('sync_start');
           setIsSyncingDb(true);
           const syncRes = await syncInstructor(token);
+          
+          console.log('[DEV LOG] LOGIN_STEP: sync_success | status HTTP recibido: 200 | respuesta resumida del backend:', syncRes);
+          setLastStep('sync_success');
+          setLastBackendStatus(200);
+          
           if (syncRes && syncRes.instructor) {
             setInstructorProfile(syncRes.instructor);
             setTempRol(syncRes.instructor.rol);
             setTempNombre(syncRes.instructor.nombre);
+            setAuthError(null); // Clear errors on success
           }
           
           // Load Fichas that this instructor participates in
           const fichasData = await fetchFichas(token);
           setSavedFichas(fichasData);
           setCurrentView('fichas_list');
-        } catch (err) {
+        } catch (err: any) {
           console.error('Error synchronizing database session:', err);
+          const status = err.status || 500;
+          setLastBackendStatus(status);
+          setLastStep('sync_error');
+          setResumeMessage(`Status: ${status} | Error: ${err.details || err.message}`);
+          
+          // Identify the exact reason for refusal and set the required user-friendly error message
+          const msg = err.details || err.message || '';
+          if (status === 403 || msg.includes('inactiva')) {
+            setAuthError('Su cuenta se encuentra inactiva. Comuníquese con coordinación.');
+          } else if (status === 401 || msg.includes('autorizada') || msg.includes('registrado') || msg.includes('autorizado')) {
+            setAuthError('Su cuenta no se encuentra autorizada para ingresar al sistema. Comuníquese con coordinación.');
+          } else {
+            setAuthError(`No fue posible validar su perfil institucional (status ${status}). Comuníquese con soporte.`);
+          }
+          
+          // Clear authenticated user states to force them to the login view with the error shown
+          setCurrentUser(null);
+          setAuthToken(null);
+          setInstructorProfile(null);
+          setSavedFichas([]);
+          setFichaInfo(null);
+          store.reiniciarDashboard();
+          
+          // Log out from Firebase client-side too so state remains consistent
+          await signOut(auth).catch(() => null);
         } finally {
           setIsSyncingDb(false);
           setIsLoadingAuth(false);
@@ -154,100 +234,6 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // Fetch registered demo instructors list for the login dropdown
-  useEffect(() => {
-    if (!currentUser) {
-      fetch('/api/public/demo-instructors')
-        .then(res => res.json())
-        .then(data => {
-          if (Array.isArray(data)) {
-            // Exclude administrative accounts from demo instructor dropdown to keep it focused
-            const instrs = data.filter(i => i.rol !== 'Administrativo' && i.rol !== 'Coordinación' && i.rol !== 'Coordinacion' && i.correo);
-            setAvailableDemoInstructors(instrs);
-          }
-        })
-        .catch(err => console.error('Error loading public demo instructors:', err));
-    }
-  }, [currentUser]);
-
-  // Demo Instructor direct login handler
-  const handleDemoInstructorLogin = async (email: string) => {
-    if (!email) return;
-    setIsLoadingAuth(true);
-    try {
-      const mockUser = {
-        uid: 'demo-ins-uid-' + Math.abs(email.split('').reduce((hash, char) => (hash << 5) - hash + char.charCodeAt(0), 0)),
-        email: email,
-        displayName: email.split('@')[0].toUpperCase(),
-        photoURL: ''
-      } as any;
-      const mockToken = 'demo-instructor:' + email;
-      
-      setCurrentUser(mockUser);
-      setAuthToken(mockToken);
-      
-      // Sync instructor profile in Cloud SQL
-      setIsSyncingDb(true);
-      const syncRes = await syncInstructor(mockToken);
-      if (syncRes && syncRes.instructor) {
-        setInstructorProfile(syncRes.instructor);
-        setTempRol(syncRes.instructor.rol);
-        setTempNombre(syncRes.instructor.nombre);
-      }
-      
-      // Load Fichas associated specifically to this instructor
-      const fichasData = await fetchFichas(mockToken);
-      setSavedFichas(fichasData);
-      setCurrentView('fichas_list');
-    } catch (err) {
-      console.error('Error in demo-instructor login bypass:', err);
-      alert('Fallo al iniciar sesión en modo instructor de prueba.');
-    } finally {
-      setIsSyncingDb(false);
-      setIsLoadingAuth(false);
-    }
-  };
-
-  // Database secure email & password login handler for instructors
-  const handleSecureInstructorLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!loginEmail.trim() || !loginPassword.trim()) {
-      setLoginError('Complete todos los campos de usuario y contraseña.');
-      return;
-    }
-
-    setLoginError(null);
-    setIsLoadingAuth(true);
-    try {
-      const res = await loginAsInstructorWithDb(loginEmail, loginPassword);
-      if (res && res.success) {
-        const email = res.instructor.correo;
-        const mockUser = {
-          uid: 'demo-ins-uid-' + Math.abs(email.split('').reduce((hash, char) => (hash << 5) - hash + char.charCodeAt(0), 0)),
-          email: email,
-          displayName: res.instructor.nombre || email.split('@')[0].toUpperCase(),
-          photoURL: ''
-        } as any;
-        
-        setCurrentUser(mockUser);
-        setAuthToken(res.token);
-        setInstructorProfile(res.instructor);
-        setTempRol(res.instructor.rol);
-        setTempNombre(res.instructor.nombre);
-
-        // Load Fichas associated specifically to this instructor
-        const fichasData = await fetchFichas(res.token);
-        setSavedFichas(fichasData);
-        setCurrentView('fichas_list');
-      }
-    } catch (err: any) {
-      console.error(err);
-      setLoginError(err.message || 'Error de credenciales. Por favor valide e intente de nuevo.');
-    } finally {
-      setIsLoadingAuth(false);
-    }
-  };
-
   // Refresh saved fichas list helper
   const reloadFichas = async () => {
     if (!authToken) return;
@@ -261,59 +247,88 @@ export default function App() {
 
   // Login handler
   const handleLogin = async () => {
-    setIsLoadingAuth(true);
-    try {
-      await signInWithPopup(auth, googleAuthProvider);
-    } catch (err: any) {
-      console.error('Popup auth failed:', err);
-      alert('Error de autenticación. Verifica que tu navegador permita ventanas emergentes (popups) para completar el inicio de sesión.');
-      setIsLoadingAuth(false);
+    if (!isFirebaseConfigured) {
+      setAuthError("La configuración de Firebase no está completa. Verifique las variables de entorno.");
+      return;
     }
-  };
-
-  // Demo Admin direct login handler
-  const handleDemoAdminLogin = async () => {
+    
+    console.log('[DEV LOG] LOGIN_STEP: click_login');
+    setLastStep('click_login');
     setIsLoadingAuth(true);
+    setAuthError(null);
+    setLastErrorCode('');
+    setLastBackendStatus(null);
+    setResumeMessage('');
+    
+    console.log('[DEV LOG] LOGIN_STEP: popup_start');
+    setLastStep('popup_start');
+    
     try {
-      const mockUser = {
-        uid: 'demo-admin-uid-123',
-        email: 'ing.deliamarherazo@gmail.com',
-        displayName: 'Delia Amar Herazo',
-        photoURL: ''
-      } as any;
-      const mockToken = 'demo-admin';
+      const result = await signInWithPopup(auth, googleAuthProvider);
+      console.log('[DEV LOG] LOGIN_STEP: popup_success');
+      setLastStep('popup_success');
+      setResumeMessage(`Usuario popup autenticado: ${result.user?.email || 'sin-correo'}`);
+    } catch (err: any) {
+      const code = err.code || 'unknown';
+      const message = err.message || '';
+      console.error('[DEV LOG] LOGIN_STEP: popup_error', err);
+      setLastStep('popup_error');
+      setLastErrorCode(code);
+      setResumeMessage(`Error Firebase: ${message.substring(0, 100)}`);
       
-      setCurrentUser(mockUser);
-      setAuthToken(mockToken);
-      
-      // Sync instructor profile in Cloud SQL
-      setIsSyncingDb(true);
-      const syncRes = await syncInstructor(mockToken);
-      if (syncRes && syncRes.instructor) {
-        setInstructorProfile(syncRes.instructor);
-        setTempRol(syncRes.instructor.rol);
-        setTempNombre(syncRes.instructor.nombre);
+      // Specifically check for invalid API key
+      if (code === 'auth/api-key-not-valid' || message.includes('api-key-not-valid')) {
+        setAuthError('La API Key configurada no es válida para Firebase Authentication.');
+        setIsLoadingAuth(false);
+        return;
       }
       
-      // Load Fichas that this instructor participates in (as they are Admin, it will load ALL)
-      const fichasData = await fetchFichas(mockToken);
-      setSavedFichas(fichasData);
-      setCurrentView('fichas_list');
-    } catch (err) {
-      console.error('Error in demo-admin login bypass:', err);
-      alert('Fallo al iniciar sesión en modo demostración.');
-    } finally {
-      setIsSyncingDb(false);
-      setIsLoadingAuth(false);
+      // Specifically check for unauthorized domain
+      if (code === 'auth/unauthorized-domain' || message.includes('unauthorized-domain')) {
+        setAuthError('El dominio actual no está autorizado en Firebase Authentication.');
+        setIsLoadingAuth(false);
+        return;
+      }
+      
+      // If error is popup-blocked, closed-by-user, or cancelled-popup, attempt redirect as fallback
+      if (
+        code === 'auth/popup-blocked' ||
+        code === 'auth/popup-closed-by-user' ||
+        code === 'auth/cancelled-popup-request'
+      ) {
+        console.log('[DEV LOG] LOGIN_STEP: redirect_start (Intento de redirección como alternativa)');
+        setLastStep('redirect_start');
+        setResumeMessage('Popup bloqueado/cancelado. Intentando redirección...');
+        try {
+          await signInWithRedirect(auth, googleAuthProvider);
+        } catch (redirErr: any) {
+          console.error('[DEV LOG] Error starting redirect:', redirErr);
+          setAuthError('No fue posible abrir el inicio de sesión con Google. Verifique que el navegador permita ventanas emergentes.');
+          setIsLoadingAuth(false);
+        }
+      } else {
+        setAuthError(`Error de autenticación con Google: ${message}`);
+        setIsLoadingAuth(false);
+      }
     }
   };
 
   // Logout handler
   const handleLogout = async () => {
     try {
-      await signOut(auth);
+      if (isFirebaseConfigured) {
+        await signOut(auth);
+      }
     } catch (err) {
       console.error('Sign out error:', err);
+    } finally {
+      setCurrentUser(null);
+      setAuthToken(null);
+      setInstructorProfile(null);
+      setSavedFichas([]);
+      setFichaInfo(null);
+      store.reiniciarDashboard();
+      setCurrentView('fichas_list');
     }
   };
 
@@ -552,98 +567,68 @@ export default function App() {
             </p>
           </div>
 
-          {/* SINGLE SECURE CREDENTIAL FORM */}
-          <form onSubmit={handleSecureInstructorLogin} className="space-y-4" id="credentials-login-form">
-            <div className="space-y-1.5">
-              <label className="block text-slate-500 text-[10px] font-black uppercase tracking-wider">
-                Correo Institucional
-              </label>
-              <div className="relative">
-                <input
-                  type="email"
-                  required
-                  placeholder="ejemplo@sena.edu.co"
-                  value={loginEmail}
-                  onChange={e => setLoginEmail(e.target.value)}
-                  className="w-full text-xs px-3.5 py-3 pl-9 border border-slate-200 rounded-xl text-slate-800 bg-slate-50/50 hover:bg-slate-50/20 focus:bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 font-bold transition-all"
-                />
-                <span className="absolute left-3.5 top-3.5 text-xs text-slate-400 select-none">✉️</span>
-              </div>
-            </div>
-
-            <div className="space-y-1.5">
-              <label className="block text-slate-500 text-[10px] font-black uppercase tracking-wider">
-                Contraseña
-              </label>
-              <div className="relative">
-                <input
-                  type="password"
-                  required
-                  placeholder="Ingrese su contraseña..."
-                  value={loginPassword}
-                  onChange={e => setLoginPassword(e.target.value)}
-                  className="w-full text-xs px-3.5 py-3 pl-9 border border-slate-200 rounded-xl text-slate-800 bg-slate-50/50 hover:bg-slate-50/20 focus:bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 font-bold transition-all"
-                />
-                <span className="absolute left-3.5 top-3.5 text-xs text-slate-400 select-none">🔑</span>
-              </div>
-            </div>
-
-            {loginError && (
-              <div className="bg-rose-50 text-rose-700 text-xs font-bold p-3 rounded-xl border border-rose-100 text-center animate-shake" id="login-error-display">
-                ⚠️ {loginError}
+          {/* SECURE GOOGLE SIGN-IN FLOW */}
+          <div className="space-y-4">
+            {authError && (
+              <div className="bg-rose-50 text-rose-700 text-xs font-semibold p-3.5 rounded-xl border border-rose-100 text-center leading-normal" id="login-error-display">
+                ⚠️ {authError}
               </div>
             )}
 
             <button
-              type="submit"
-              disabled={isLoggingInWithPass}
-              className="w-full bg-[#39A900] hover:bg-[#2f8800] text-white font-extrabold text-xs py-3.5 px-4 rounded-xl shadow-md shadow-emerald-950/10 transition-all duration-300 flex items-center justify-center gap-2 cursor-pointer disabled:opacity-75"
+              onClick={handleLogin}
+              className="w-full bg-white hover:bg-slate-50 text-slate-700 font-extrabold text-xs py-3.5 px-4 rounded-xl shadow-md border border-slate-200 transition-all duration-300 flex items-center justify-center gap-2.5 cursor-pointer"
             >
-              {isLoggingInWithPass ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  <span>Verificando Credenciales...</span>
-                </>
-              ) : (
-                <>
-                  <ShieldCheck className="w-4 h-4" />
-                  <span>Ingresar al Sistema</span>
-                </>
-              )}
+              <svg className="w-4 h-4 mr-1 shrink-0" viewBox="0 0 24 24">
+                <path
+                  fill="#4285F4"
+                  d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+                />
+                <path
+                  fill="#34A853"
+                  d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+                />
+                <path
+                  fill="#FBBC05"
+                  d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
+                />
+                <path
+                  fill="#EA4335"
+                  d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"
+                />
+              </svg>
+              <span>Ingresar con Google</span>
             </button>
-          </form>
 
-          {/* CREDENTIAL DIRECTORY DIRECT INFORMATION BLOCK */}
-          <div className="bg-slate-50/80 border border-slate-100 rounded-2xl p-4 space-y-2.5">
-            <span className="block text-[10px] font-black text-slate-500 uppercase tracking-widest">
-              🔒 Credenciales de Acceso Autorizadas:
-            </span>
-            <div className="space-y-2 text-[11px] text-slate-600 leading-normal font-medium">
-              <div className="border-b border-dashed border-slate-200/60 pb-2">
-                <p className="font-extrabold text-[#39A900]">Administradora Principal:</p>
-                <p className="font-mono text-[10.5px] text-slate-500 mt-1">
-                  Correo: <span className="font-bold text-slate-700">ing.deliamarherazo@gmail.com</span>
-                </p>
-                <p className="font-mono text-[10.5px] text-slate-500">
-                  Clave: <span className="font-bold text-slate-700">sena123</span>
-                </p>
+            {/* DIAGNOSTIC PANEL FOR DEVELOPMENT ONLY */}
+            {((import.meta as any).env?.DEV || process.env.NODE_ENV !== 'production') && (
+              <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-2.5 text-[11px] font-mono text-slate-600 text-left" id="dev-diagnostics-panel">
+                <div className="flex items-center justify-between border-b border-slate-200 pb-1.5 font-bold text-slate-800">
+                  <span>🛠️ Panel de Diagnóstico (DEV)</span>
+                  <span className="text-[9px] bg-emerald-100 text-emerald-800 font-sans font-bold px-1.5 py-0.5 rounded uppercase">Activo</span>
+                </div>
+                <div className="grid grid-cols-2 gap-x-2 gap-y-1 leading-relaxed">
+                  <div className="text-slate-500 font-medium font-sans">Último paso:</div>
+                  <div className="font-semibold text-slate-800 break-all">{lastStep || 'Ninguno'}</div>
+                  
+                  <div className="text-slate-500 font-medium font-sans">Código error:</div>
+                  <div className={`font-semibold break-all ${lastErrorCode ? 'text-rose-600' : 'text-slate-800'}`}>
+                    {lastErrorCode || 'Ninguno'}
+                  </div>
+                  
+                  <div className="text-slate-500 font-medium font-sans">Status backend:</div>
+                  <div className={`font-semibold ${lastBackendStatus === 200 ? 'text-emerald-600' : lastBackendStatus ? 'text-rose-600' : 'text-slate-800'}`}>
+                    {lastBackendStatus || 'Ninguno'}
+                  </div>
+                </div>
+                {resumeMessage && (
+                  <div className="bg-white border border-slate-150 rounded p-2 text-[10px] break-words text-slate-500 leading-normal">
+                    <span className="font-sans font-bold text-slate-700 block mb-0.5">Mensaje resumido:</span>
+                    {resumeMessage}
+                  </div>
+                )}
               </div>
-              <div className="border-b border-dashed border-slate-200/60 pb-2">
-                <p className="font-extrabold text-slate-700">Coordinador Académico:</p>
-                <p className="font-mono text-[10.5px] text-slate-500 mt-1">
-                  Correo: <span className="font-bold text-slate-700">coordinador@sena.edu.co</span>
-                </p>
-                <p className="font-mono text-[10.5px] text-slate-500">
-                  Clave: <span className="font-bold text-slate-700">sena123</span>
-                </p>
-              </div>
-              <div>
-                <p className="font-bold text-slate-500 text-[10.5px]">Instructores del Programa:</p>
-                <p className="text-[10px] text-slate-400/90 mt-1">
-                  Inicie con cualquier correo de instructor registrado con la contraseña por defecto <strong className="text-slate-600">sena123</strong>.
-                </p>
-              </div>
-            </div>
+            )}
           </div>
 
           {/* Secure lock note */}

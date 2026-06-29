@@ -326,88 +326,174 @@ async function startServer() {
 
   // 2. Sync Instructor Profile on Login (with memory fallback)
   app.post('/api/instructor/sync', requireAuth, async (req: AuthRequest, res) => {
+    const isDev = process.env.NODE_ENV !== 'production';
     try {
       const email = req.user?.email || '';
       const uid = req.user?.uid || '';
       const name = req.user?.name || email.split('@')[0];
 
+      if (isDev) {
+        console.log(`[DEV LOG] /api/instructor/sync | email: ${email} | uid: ${uid}`);
+      }
+
       if (!email || !uid) {
+        if (isDev) {
+          console.log(`[DEV LOG] Correo: Sin correo | Endpoint: POST /api/instructor/sync | Estado HTTP: 400 | Motivo: Missing email or uid in auth context`);
+        }
         return res.status(400).json({ error: 'Missing email or uid from auth context' });
       }
 
       const cleanEmail = email.trim().toLowerCase();
-      const isInitialAdmin = cleanEmail === 'ing.deliamarherazo@gmail.com' || cleanEmail.includes('admin') || cleanEmail.includes('coordinador');
-      const standardRol = isInitialAdmin ? 'Administrativo' : 'Instructor Técnico';
+      const initialAdminEmail = process.env.INITIAL_ADMIN_EMAIL ? process.env.INITIAL_ADMIN_EMAIL.trim().toLowerCase() : '';
+      const initialAdminConfigured = !!initialAdminEmail;
+      const isInitialAdmin = initialAdminConfigured && (cleanEmail === initialAdminEmail);
 
-      // Load/save to memory DB first
-      let memMatch = memoryDb.instructores.find(i => i.correo.toLowerCase() === cleanEmail);
-      if (!memMatch) {
-        memMatch = memoryDb.instructores.find(i => i.uid === uid);
+      if (isDev) {
+        console.log(`[DEV LOG] INITIAL_ADMIN_EMAIL configurado: ${initialAdminConfigured}`);
+        console.log(`[DEV LOG] Correo coincide con INITIAL_ADMIN_EMAIL: ${isInitialAdmin}`);
       }
 
-      if (memMatch) {
-        memMatch.correo = cleanEmail;
-        memMatch.uid = uid;
-        if (name && name !== cleanEmail.split('@')[0]) {
-          memMatch.nombre = name;
-        }
-      } else {
-        memMatch = {
-          id: memoryDb.instructores.length + 1,
-          uid,
-          correo: cleanEmail,
-          nombre: name,
-          rol: standardRol,
-          contrasena: 'sena123',
-          createdAt: new Date()
-        };
-        memoryDb.instructores.push(memMatch);
-      }
+      let instructorRow: any = null;
+      let userExistsInDb = false;
+      let userDbStatus: string | undefined = undefined;
 
-      let instructorRow = memMatch;
-
-      // Try Postgres sync
+      // 1. Try PostgreSQL Sync
       try {
-        let existingByEmail = await db.select().from(instructores).where(eq(instructores.correo, cleanEmail));
-        if (existingByEmail.length > 0) {
-          const updated = await db.update(instructores)
-            .set({
-              uid,
-              nombre: existingByEmail[0].nombre || name
-            })
-            .where(eq(instructores.id, existingByEmail[0].id))
-            .returning();
-          instructorRow = updated[0];
-        } else {
-          const existingByUid = await db.select().from(instructores).where(eq(instructores.uid, uid));
-          if (existingByUid.length > 0) {
+        const existing = await db.select().from(instructores).where(eq(instructores.correo, cleanEmail));
+        userExistsInDb = existing.length > 0;
+        
+        if (userExistsInDb) {
+          const user = existing[0];
+          userDbStatus = user.estado || undefined;
+          
+          if (isDev) {
+            console.log(`[DEV LOG] Usuario existe en base de datos PostgreSQL: true | Estado: ${userDbStatus}`);
+          }
+
+          if (isInitialAdmin) {
+            // Update or activate as Administrativo
             const updated = await db.update(instructores)
               .set({
-                correo: cleanEmail,
-                nombre: name
+                uid,
+                nombre: user.nombre || name,
+                rol: 'Administrativo',
+                estado: 'Activo'
               })
-              .where(eq(instructores.id, existingByUid[0].id))
+              .where(eq(instructores.id, user.id))
               .returning();
             instructorRow = updated[0];
           } else {
+            if (user.estado === 'Inactivo') {
+              if (isDev) {
+                console.log(`[DEV LOG] Correo: ${cleanEmail} | Endpoint: POST /api/instructor/sync | Estado HTTP: 403 | Motivo: Su cuenta se encuentra inactiva. Comuníquese con coordinación. | Rol devuelto: ${user.rol}`);
+              }
+              return res.status(403).json({ error: 'Su cuenta se encuentra inactiva. Comuníquese con coordinación.' });
+            }
+            // Update UID and sync name
+            const updated = await db.update(instructores)
+              .set({
+                uid,
+                nombre: user.nombre || name
+              })
+              .where(eq(instructores.id, user.id))
+              .returning();
+            instructorRow = updated[0];
+          }
+        } else {
+          if (isDev) {
+            console.log(`[DEV LOG] Usuario existe en base de datos PostgreSQL: false`);
+          }
+
+          // Email does not exist in DB
+          if (isInitialAdmin) {
+            // Create initial admin
             const result = await db.insert(instructores)
               .values({
                 uid,
                 correo: cleanEmail,
                 nombre: name,
-                rol: standardRol
+                rol: 'Administrativo',
+                estado: 'Activo'
               })
               .returning();
             instructorRow = result[0];
+          } else {
+            // Not INITIAL_ADMIN_EMAIL and not in DB
+            if (isDev) {
+              console.log(`[DEV LOG] Correo: ${cleanEmail} | Endpoint: POST /api/instructor/sync | Estado HTTP: 401 | Motivo: Su cuenta no se encuentra autorizada para ingresar al sistema. Comuníquese con coordinación. | Rol devuelto: ninguno`);
+            }
+            return res.status(401).json({ error: 'Su cuenta no se encuentra autorizada para ingresar al sistema. Comuníquese con coordinación.' });
           }
         }
       } catch (dbErr: any) {
-        console.warn('Postgres profile synchronization skipped (running in local fallback cache):', dbErr.message);
+        console.warn('Postgres profile synchronization failed, using memory DB fallback:', dbErr.message);
+      }
+
+      // 2. Memory DB Fallback (if PostgreSQL skipped or offline)
+      if (!instructorRow) {
+        if (isDev) {
+          console.log(`[DEV LOG] Usando fallback de base de datos en memoria para sincronización.`);
+        }
+        let memMatch = memoryDb.instructores.find(i => i.correo.toLowerCase() === cleanEmail);
+        userExistsInDb = !!memMatch;
+        if (memMatch) {
+          userDbStatus = memMatch.estado || undefined;
+          if (isDev) {
+            console.log(`[DEV LOG] Usuario existe en Memory DB: true | Estado: ${userDbStatus}`);
+          }
+
+          if (isInitialAdmin) {
+            memMatch.uid = uid;
+            memMatch.rol = 'Administrativo';
+            memMatch.estado = 'Activo';
+            instructorRow = memMatch;
+          } else {
+            if (memMatch.estado === 'Inactivo') {
+              if (isDev) {
+                console.log(`[DEV LOG] Correo: ${cleanEmail} | Endpoint: POST /api/instructor/sync | Estado HTTP: 403 | Motivo: Su cuenta se encuentra inactiva. Comuníquese con coordinación. (Memory DB) | Rol devuelto: ${memMatch.rol}`);
+              }
+              return res.status(403).json({ error: 'Su cuenta se encuentra inactiva. Comuníquese con coordinación.' });
+            }
+            memMatch.uid = uid;
+            instructorRow = memMatch;
+          }
+        } else {
+          if (isDev) {
+            console.log(`[DEV LOG] Usuario existe en Memory DB: false`);
+          }
+
+          if (isInitialAdmin) {
+            memMatch = {
+              id: memoryDb.instructores.length + 1,
+              uid,
+              correo: cleanEmail,
+              nombre: name,
+              rol: 'Administrativo',
+              estado: 'Activo',
+              contrasena: 'sena123',
+              createdAt: new Date()
+            };
+            memoryDb.instructores.push(memMatch);
+            instructorRow = memMatch;
+          } else {
+            if (isDev) {
+              console.log(`[DEV LOG] Correo: ${cleanEmail} | Endpoint: POST /api/instructor/sync | Estado HTTP: 401 | Motivo: Su cuenta no se encuentra autorizada para ingresar al sistema. Comuníquese con coordinación. (Memory DB) | Rol devuelto: ninguno`);
+            }
+            return res.status(401).json({ error: 'Su cuenta no se encuentra autorizada para ingresar al sistema. Comuníquese con coordinación.' });
+          }
+        }
+      }
+
+      if (isDev) {
+        console.log(`[DEV LOG] Correo: ${cleanEmail} | Endpoint: POST /api/instructor/sync | Estado HTTP: 200 | Sincronización Exitosa | Rol devuelto: ${instructorRow.rol}`);
       }
 
       return res.json({ success: true, instructor: instructorRow });
     } catch (err: any) {
       console.error('Error in /api/instructor/sync:', err);
+      if (isDev) {
+        console.log(`[DEV LOG] Correo: desconocido | Endpoint: POST /api/instructor/sync | Estado HTTP: 500 | Motivo: ${err.message || 'Error del servidor'}`);
+      }
       return res.status(500).json({ error: 'Error al sincronizar perfil del instructor' });
     }
   });

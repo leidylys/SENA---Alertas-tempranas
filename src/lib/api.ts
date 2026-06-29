@@ -9,11 +9,32 @@ export async function fetchInstructor(token: string) {
 }
 
 export async function syncInstructor(token: string) {
+  const isDev = (import.meta as any).env?.DEV || process.env.NODE_ENV !== 'production';
+  if (isDev) {
+    const tokenExists = !!token;
+    const tokenLength = token ? token.length : 0;
+    const startsWithEy = token ? token.startsWith('eyJ') : false;
+    console.log(`[DEV LOG] syncInstructor request diagnostics:
+      - token existe: ${tokenExists}
+      - token length: ${tokenLength}
+      - token empieza con eyJ: ${startsWithEy}
+      - endpoint llamado: /api/instructor/sync`);
+  }
+
   const res = await fetch('/api/instructor/sync', {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${token}` }
   });
-  if (!res.ok) throw new Error('No se pudo sincronizar el perfil del instructor');
+  if (!res.ok) {
+    const text = await res.text();
+    let errJson;
+    try { errJson = JSON.parse(text); } catch { /* ignore */ }
+    const errorMsg = errJson?.error || 'No se pudo sincronizar el perfil del instructor';
+    const err = new Error(errorMsg) as any;
+    err.status = res.status;
+    err.details = errorMsg;
+    throw err;
+  }
   return res.json();
 }
 
