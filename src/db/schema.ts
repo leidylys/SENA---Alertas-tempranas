@@ -88,10 +88,40 @@ export const seguimientosHistorico = pgTable('seguimientos_historico', {
   estadoNuevo: text('estado_nuevo').notNull(),
   detalles: text('detalles').notNull(), // text from instructor's commitment modal
   compromisoFecha: text('compromiso_fecha'), // Optional commitment deadline
-  tipoSeguimiento: text('tipo_seguimiento'), // e.g. "Correo de llamado a ponerse al día"
+  tipoSeguimiento: text('tipo_seguimiento'), // e.g. "Correo de llamado a ponerse al día", "Comunicación de seguimiento", etc.
   evidenciasPendientes: integer('evidencias_pendientes'),
   diasSinAcceso: integer('dias_sin_acceso'),
   numeroLlamado: integer('numero_llamado'),
+  
+  // New Bitacora fields for consolidation
+  codigoFicha: text('codigo_ficha'),
+  usuarioResponsableNombre: text('usuario_responsable_nombre'),
+  usuarioResponsableRol: text('usuario_responsable_rol'),
+  medioComunicacion: text('medio_comunicacion'), // "Correo electrónico", "Llamada telefónica", "WhatsApp", etc.
+  fechaRegistro: timestamp('fecha_registro').defaultNow(),
+  fechaEnvioMensaje: text('fecha_envio_mensaje'),
+  fechaRespuestaAprendiz: text('fecha_respuesta_aprendiz'),
+  fechaProximoSeguimiento: text('fecha_proximo_seguimiento'),
+  asunto: text('asunto'),
+  cuerpoMensaje: text('cuerpo_mensaje'),
+  observacion: text('observacion'),
+  respuestaAprendiz: text('respuesta_aprendiz'),
+  acuerdosEstablecidos: text('acuerdos_establecidos'),
+  compromisos: text('compromisos'),
+  proximaAccion: text('proxima_accion'),
+  fechaUltimoIngreso: text('fecha_ultimo_ingreso'),
+  totalEvidencias: integer('total_evidencias'),
+  evidenciasEnviadas: integer('evidencias_enviadas'),
+  evidenciasAprobadas: integer('evidencias_aprobadas'),
+  evidenciasDesaprobadas: integer('evidencias_desaprobadas'),
+  detalleEvidenciasPendientes: text('detalle_evidencias_pendientes'),
+  creadoPorId: integer('creado_por_id'),
+  creadoPorNombre: text('creado_por_nombre'),
+  creadoPorRol: text('creado_por_rol'),
+  editablePorRol: text('editable_por_rol'),
+  origenRegistro: text('origen_registro'), // 'Instructor', 'Administrativo', 'Bienestar', 'Sistema'
+  parentSeguimientoId: integer('parent_seguimiento_id'),
+
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 

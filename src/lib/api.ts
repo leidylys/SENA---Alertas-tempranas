@@ -230,3 +230,31 @@ export async function resetSystemDatabase(token: string) {
   }
   return res.json();
 }
+
+export async function fetchAprendizSeguimientos(token: string, aprendizFichaId: number) {
+  const res = await fetch(`/api/aprendices/${aprendizFichaId}/seguimientos`, {
+    headers: { 'Authorization': `Bearer ${token}` }
+  });
+  if (!res.ok) throw new Error('No se pudo recuperar la bitácora del aprendiz');
+  return res.json();
+}
+
+export async function saveBitacoraSeguimiento(
+  token: string,
+  aprendizFichaId: number,
+  datosSeguimiento: any
+) {
+  const res = await fetch(`/api/aprendices/${aprendizFichaId}/seguimientos`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(datosSeguimiento)
+  });
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => null);
+    throw new Error(errorData?.error || 'Error al registrar el seguimiento en la bitácora');
+  }
+  return res.json();
+}

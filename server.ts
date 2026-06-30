@@ -1888,7 +1888,35 @@ async function startServer() {
             evidenciasPendientes: seguimientosHistorico.evidenciasPendientes,
             diasSinAcceso: seguimientosHistorico.diasSinAcceso,
             numeroLlamado: seguimientosHistorico.numeroLlamado,
-            instructorNombre: instructores.nombre
+            instructorNombre: instructores.nombre,
+            instructorCorreo: instructores.correo,
+            instructorRol: instructores.rol,
+            codigoFicha: seguimientosHistorico.codigoFicha,
+            usuarioResponsableNombre: seguimientosHistorico.usuarioResponsableNombre,
+            usuarioResponsableRol: seguimientosHistorico.usuarioResponsableRol,
+            medioComunicacion: seguimientosHistorico.medioComunicacion,
+            fechaRegistro: seguimientosHistorico.fechaRegistro,
+            fechaEnvioMensaje: seguimientosHistorico.fechaEnvioMensaje,
+            fechaRespuestaAprendiz: seguimientosHistorico.fechaRespuestaAprendiz,
+            fechaProximoSeguimiento: seguimientosHistorico.fechaProximoSeguimiento,
+            asunto: seguimientosHistorico.asunto,
+            cuerpoMensaje: seguimientosHistorico.cuerpoMensaje,
+            observacion: seguimientosHistorico.observacion,
+            respuestaAprendiz: seguimientosHistorico.respuestaAprendiz,
+            acuerdosEstablecidos: seguimientosHistorico.acuerdosEstablecidos,
+            compromisos: seguimientosHistorico.compromisos,
+            proximaAccion: seguimientosHistorico.proximaAccion,
+            fechaUltimoIngreso: seguimientosHistorico.fechaUltimoIngreso,
+            totalEvidencias: seguimientosHistorico.totalEvidencias,
+            evidenciasEnviadas: seguimientosHistorico.evidenciasEnviadas,
+            evidenciasAprobadas: seguimientosHistorico.evidenciasAprobadas,
+            evidenciasDesaprobadas: seguimientosHistorico.evidenciasDesaprobadas,
+            detalleEvidenciasPendientes: seguimientosHistorico.detalleEvidenciasPendientes,
+            creadoPorId: seguimientosHistorico.creadoPorId,
+            creadoPorNombre: seguimientosHistorico.creadoPorNombre,
+            creadoPorRol: seguimientosHistorico.creadoPorRol,
+            editablePorRol: seguimientosHistorico.editablePorRol,
+            origenRegistro: seguimientosHistorico.origenRegistro
           })
           .from(seguimientosHistorico)
           .leftJoin(instructores, eq(seguimientosHistorico.instructorId, instructores.id))
@@ -1900,15 +1928,43 @@ async function startServer() {
             id: student.documento, 
             dbId: student.id,      
             historialIntervenciones: historyLogs.map(log => ({
+              id: String(log.id),
               fecha: log.fecha.toISOString().split('T')[0],
-              instructor: log.instructorNombre || 'Instructor',
-              detalle: `${log.detalles}${log.compromisoFecha ? ` (Fecha compromiso: ${log.compromisoFecha})` : ''}`,
+              instructor: log.usuarioResponsableNombre || log.creadoPorNombre || log.instructorNombre || 'Instructor',
+              detalle: log.detalles || `${log.observacion || ''}${log.compromisoFecha ? ` (Fecha compromiso: ${log.compromisoFecha})` : ''}`,
               previo: log.estadoPrevio,
               nuevo: log.estadoNuevo,
               tipoSeguimiento: log.tipoSeguimiento,
               evidenciasPendientes: log.evidenciasPendientes,
               diasSinAcceso: log.diasSinAcceso,
-              numeroLlamado: log.numeroLlamado
+              numeroLlamado: log.numeroLlamado,
+              
+              codigoFicha: log.codigoFicha,
+              usuarioResponsableNombre: log.usuarioResponsableNombre || log.instructorNombre,
+              usuarioResponsableRol: log.usuarioResponsableRol || log.instructorRol,
+              medioComunicacion: log.medioComunicacion,
+              fechaRegistro: log.fechaRegistro ? log.fechaRegistro.toISOString() : undefined,
+              fechaEnvioMensaje: log.fechaEnvioMensaje,
+              fechaRespuestaAprendiz: log.fechaRespuestaAprendiz,
+              fechaProximoSeguimiento: log.fechaProximoSeguimiento,
+              asunto: log.asunto,
+              cuerpoMensaje: log.cuerpoMensaje,
+              observacion: log.observacion,
+              respuestaAprendiz: log.respuestaAprendiz,
+              acuerdosEstablecidos: log.acuerdosEstablecidos,
+              compromisos: log.compromisos,
+              proximaAccion: log.proximaAccion,
+              fechaUltimoIngreso: log.fechaUltimoIngreso,
+              totalEvidencias: log.totalEvidencias,
+              evidenciasEnviadas: log.evidenciasEnviadas,
+              evidenciasAprobadas: log.evidenciasAprobadas,
+              evidenciasDesaprobadas: log.evidenciasDesaprobadas,
+              detalleEvidenciasPendientes: log.detalleEvidenciasPendientes,
+              creadoPorId: log.creadoPorId,
+              creadoPorNombre: log.creadoPorNombre,
+              creadoPorRol: log.creadoPorRol,
+              editablePorRol: log.editablePorRol,
+              origenRegistro: log.origenRegistro
             }))
           });
         }
@@ -1943,15 +1999,43 @@ async function startServer() {
             historialIntervenciones: historyLogs.map(log => {
               const inst = memoryDb.instructores.find(i => i.id === log.instructorId);
               return {
+                id: String(log.id),
                 fecha: log.fecha.toISOString().split('T')[0],
-                instructor: inst?.nombre || 'Instructor',
-                detalle: `${log.detalles}${log.compromisoFecha ? ` (Fecha compromiso: ${log.compromisoFecha})` : ''}`,
+                instructor: log.usuarioResponsableNombre || log.creadoPorNombre || inst?.nombre || 'Instructor',
+                detalle: log.detalles || `${log.observacion || ''}${log.compromisoFecha ? ` (Fecha compromiso: ${log.compromisoFecha})` : ''}`,
                 previo: log.estadoPrevio,
                 nuevo: log.estadoNuevo,
                 tipoSeguimiento: log.tipoSeguimiento,
                 evidenciasPendientes: log.evidenciasPendientes,
                 diasSinAcceso: log.diasSinAcceso,
-                numeroLlamado: log.numeroLlamado
+                numeroLlamado: log.numeroLlamado,
+
+                codigoFicha: log.codigoFicha,
+                usuarioResponsableNombre: log.usuarioResponsableNombre || inst?.nombre,
+                usuarioResponsableRol: log.usuarioResponsableRol || inst?.rol,
+                medioComunicacion: log.medioComunicacion,
+                fechaRegistro: log.fechaRegistro ? log.fechaRegistro.toISOString() : undefined,
+                fechaEnvioMensaje: log.fechaEnvioMensaje,
+                fechaRespuestaAprendiz: log.fechaRespuestaAprendiz,
+                fechaProximoSeguimiento: log.fechaProximoSeguimiento,
+                asunto: log.asunto,
+                cuerpoMensaje: log.cuerpoMensaje,
+                observacion: log.observacion,
+                respuestaAprendiz: log.respuestaAprendiz,
+                acuerdosEstablecidos: log.acuerdosEstablecidos,
+                compromisos: log.compromisos,
+                proximaAccion: log.proximaAccion,
+                fechaUltimoIngreso: log.fechaUltimoIngreso,
+                totalEvidencias: log.totalEvidencias,
+                evidenciasEnviadas: log.evidenciasEnviadas,
+                evidenciasAprobadas: log.evidenciasAprobadas,
+                evidenciasDesaprobadas: log.evidenciasDesaprobadas,
+                detalleEvidenciasPendientes: log.detalleEvidenciasPendientes,
+                creadoPorId: log.creadoPorId,
+                creadoPorNombre: log.creadoPorNombre,
+                creadoPorRol: log.creadoPorRol,
+                editablePorRol: log.editablePorRol,
+                origenRegistro: log.origenRegistro
               };
             })
           };
@@ -3115,6 +3199,505 @@ ${mensaje}`;
       };
       console.error('[LLAMADO_ENDPOINT] error_response', errorResponse);
       return res.status(500).json(errorResponse);
+    }
+  });
+
+  // NEW ENDPOINT: Register custom follow-up / communication (Bitacora)
+  app.post('/api/aprendices/:aprendizFichaId/seguimientos', requireAuth, async (req: AuthRequest, res) => {
+    try {
+      const uid = req.user?.uid || '';
+      const aprendizFichaId = Number(req.params.aprendizFichaId);
+
+      if (isNaN(aprendizFichaId)) {
+        return res.status(400).json({ success: false, error: 'ID de aprendiz inválido.' });
+      }
+
+      // Resolve Instructor profile
+      let insRecord: any = null;
+      try {
+        const list = await db.select().from(instructores).where(eq(instructores.uid, uid));
+        if (list.length > 0) insRecord = list[0];
+        else if (req.user?.email) {
+          const emailList = await db.select().from(instructores).where(eq(instructores.correo, req.user.email));
+          if (emailList.length > 0) insRecord = emailList[0];
+        }
+      } catch (e) {}
+      
+      if (!insRecord) {
+        insRecord = memoryDb.instructores.find(i => i.uid === uid || (req.user?.email && i.correo === req.user.email));
+      }
+
+      if (!insRecord) {
+        return res.status(403).json({
+          success: false,
+          error: "No tienes permiso para registrar seguimientos."
+        });
+      }
+
+      const insId = insRecord.id;
+
+      // Extract tracking details
+      const {
+        tipoSeguimiento,
+        medioComunicacion,
+        fechaEnvioMensaje,
+        fechaRespuestaAprendiz,
+        fechaProximoSeguimiento,
+        asunto,
+        cuerpoMensaje,
+        observacion,
+        respuestaAprendiz,
+        acuerdosEstablecidos,
+        compromisos,
+        proximaAccion,
+        fechaUltimoIngreso,
+        totalEvidencias,
+        evidenciasEnviadas,
+        evidenciasAprobadas,
+        evidenciasDesaprobadas,
+        evidenciasPendientes,
+        diasSinAcceso,
+        detalleEvidenciasPendientes,
+        creadoPorNombre,
+        creadoPorRol,
+        origenRegistro,
+        parentSeguimientoId
+      } = req.body;
+
+      // Find the student in Postgres
+      let pgStudent: any = null;
+      try {
+        const studentResult = await db.select().from(aprendicesFichas).where(eq(aprendicesFichas.id, aprendizFichaId));
+        if (studentResult.length > 0) {
+          pgStudent = studentResult[0];
+        }
+      } catch (dbErr) {}
+
+      // Find the student in MemoryDb
+      let memStudent = memoryDb.aprendicesFichas.find(s => s.id === aprendizFichaId);
+
+      if (!pgStudent && !memStudent) {
+        return res.status(404).json({ success: false, error: 'No se encontró el aprendiz.' });
+      }
+
+      // Resolve Ficha code
+      let resolvedCodigoFicha = '';
+      if (pgStudent) {
+        try {
+          const fList = await db.select().from(fichas).where(eq(fichas.id, pgStudent.fichaId));
+          if (fList.length > 0) resolvedCodigoFicha = fList[0].codigoFicha;
+        } catch (e) {}
+      } else if (memStudent) {
+        const f = memoryDb.fichas.find(f => f.id === memStudent.fichaId);
+        if (f) resolvedCodigoFicha = f.codigoFicha;
+      }
+
+      // Format details text
+      const detailsText = observacion || asunto || cuerpoMensaje || 'Seguimiento registrado en bitácora';
+
+      // Determine state transitions if applicable
+      const prevIntervention = pgStudent?.estadoIntervencion || memStudent?.estadoIntervencion || 'Sin novedad';
+      let nextIntervention = prevIntervention;
+
+      // Map state based on request body or tipoSeguimiento
+      if (req.body.estadoIntervencion) {
+        const uiState = req.body.estadoIntervencion;
+        if (uiState === 'Cerrado' || uiState === 'Caso cerrado' || uiState === 'Caso cerrado por contacto efectivo') {
+          nextIntervention = 'Cerrado';
+        } else if (uiState === 'Remitido a Bienestar') {
+          nextIntervention = 'Remitido a Bienestar';
+        } else if (uiState === 'Acuerdo establecido' || uiState === 'Intervenido') {
+          nextIntervention = 'Intervenido';
+        } else {
+          nextIntervention = 'En seguimiento';
+        }
+      } else {
+        if (tipoSeguimiento === 'Cierre del caso') {
+          nextIntervention = 'Cerrado';
+        } else if (tipoSeguimiento === 'Remitido a Bienestar') {
+          nextIntervention = 'Remitido a Bienestar';
+        } else if (tipoSeguimiento === 'Llamado académico' || tipoSeguimiento === 'Plan de mejora' || tipoSeguimiento === 'Acuerdo académico') {
+          nextIntervention = 'En seguimiento';
+        }
+      }
+
+      let createdLogId: number | null = null;
+
+      // 1. Persist to Postgres
+      if (pgStudent) {
+        try {
+          // If state changed, update apprentice record
+          if (nextIntervention !== prevIntervention) {
+            await db.update(aprendicesFichas)
+              .set({ estadoIntervencion: nextIntervention })
+              .where(eq(aprendicesFichas.id, pgStudent.id));
+          }
+
+          const insertResult = await db.insert(seguimientosHistorico)
+            .values({
+              aprendizFichaId: pgStudent.id,
+              instructorId: insId,
+              estadoPrevio: prevIntervention,
+              estadoNuevo: nextIntervention,
+              detalles: detailsText,
+              tipoSeguimiento: tipoSeguimiento || 'Comunicación de seguimiento',
+              evidenciasPendientes: Number(evidenciasPendientes || pgStudent.evidenciasPendientes || 0),
+              diasSinAcceso: Number(diasSinAcceso || pgStudent.diasSinAcceso || 0),
+              
+              codigoFicha: resolvedCodigoFicha,
+              usuarioResponsableNombre: insRecord.nombre,
+              usuarioResponsableRol: insRecord.rol,
+              medioComunicacion: medioComunicacion || 'Otro',
+              fechaRegistro: new Date(),
+              fechaEnvioMensaje: fechaEnvioMensaje || new Date().toISOString().split('T')[0],
+              fechaRespuestaAprendiz: fechaRespuestaAprendiz || null,
+              fechaProximoSeguimiento: fechaProximoSeguimiento || null,
+              asunto: asunto || tipoSeguimiento || 'Seguimiento',
+              cuerpoMensaje: cuerpoMensaje || null,
+              observacion: observacion || null,
+              respuestaAprendiz: respuestaAprendiz || null,
+              acuerdosEstablecidos: acuerdosEstablecidos || null,
+              compromisos: compromisos || null,
+              proximaAccion: proximaAccion || null,
+              fechaUltimoIngreso: fechaUltimoIngreso || pgStudent.ultimoAcceso || null,
+              totalEvidencias: Number(totalEvidencias || 0),
+              evidenciasEnviadas: Number(evidenciasEnviadas || 0),
+              evidenciasAprobadas: Number(evidenciasAprobadas || 0),
+              evidenciasDesaprobadas: Number(evidenciasDesaprobadas || 0),
+              detalleEvidenciasPendientes: detalleEvidenciasPendientes || null,
+              creadoPorId: insId,
+              creadoPorNombre: creadoPorNombre || insRecord.nombre,
+              creadoPorRol: creadoPorRol || insRecord.rol,
+              editablePorRol: insRecord.rol,
+              origenRegistro: origenRegistro || 'Instructor',
+              parentSeguimientoId: parentSeguimientoId ? Number(parentSeguimientoId) : null
+            })
+            .returning({ id: seguimientosHistorico.id });
+
+          if (insertResult.length > 0) {
+            createdLogId = insertResult[0].id;
+          }
+        } catch (dbErr: any) {
+          console.error('[BITACORA_ENDPOINT] Postgres insert failed:', dbErr.message);
+          return res.status(500).json({ success: false, error: 'No fue posible registrar el seguimiento en Postgres.' });
+        }
+      }
+
+      // 2. Persist to memory fallback
+      if (memStudent) {
+        if (nextIntervention !== prevIntervention) {
+          memStudent.estadoIntervencion = nextIntervention;
+        }
+
+        const memLogId = memoryDb.seguimientosHistorico.length + 1;
+        memoryDb.seguimientosHistorico.push({
+          id: memLogId,
+          aprendizFichaId: memStudent.id,
+          instructorId: insId,
+          fecha: new Date(),
+          estadoPrevio: prevIntervention,
+          estadoNuevo: nextIntervention,
+          detalles: detailsText,
+          tipoSeguimiento: tipoSeguimiento || 'Comunicación de seguimiento',
+          evidenciasPendientes: Number(evidenciasPendientes || memStudent.evidenciasPendientes || 0),
+          diasSinAcceso: Number(diasSinAcceso || memStudent.diasSinAcceso || 0),
+          
+          codigoFicha: resolvedCodigoFicha,
+          usuarioResponsableNombre: insRecord.nombre,
+          usuarioResponsableRol: insRecord.rol,
+          medioComunicacion: medioComunicacion || 'Otro',
+          fechaRegistro: new Date(),
+          fechaEnvioMensaje: fechaEnvioMensaje || new Date().toISOString().split('T')[0],
+          fechaRespuestaAprendiz: fechaRespuestaAprendiz || null,
+          fechaProximoSeguimiento: fechaProximoSeguimiento || null,
+          asunto: asunto || tipoSeguimiento || 'Seguimiento',
+          cuerpoMensaje: cuerpoMensaje || null,
+          observacion: observacion || null,
+          respuestaAprendiz: respuestaAprendiz || null,
+          acuerdosEstablecidos: acuerdosEstablecidos || null,
+          compromisos: compromisos || null,
+          proximaAccion: proximaAccion || null,
+          fechaUltimoIngreso: fechaUltimoIngreso || memStudent.ultimoAcceso || null,
+          totalEvidencias: Number(totalEvidencias || 0),
+          evidenciasEnviadas: Number(evidenciasEnviadas || 0),
+          evidenciasAprobadas: Number(evidenciasAprobadas || 0),
+          evidenciasDesaprobadas: Number(evidenciasDesaprobadas || 0),
+          detalleEvidenciasPendientes: detalleEvidenciasPendientes || null,
+          creadoPorId: insId,
+          creadoPorNombre: creadoPorNombre || insRecord.nombre,
+          creadoPorRol: creadoPorRol || insRecord.rol,
+          editablePorRol: insRecord.rol,
+          origenRegistro: origenRegistro || 'Instructor',
+          parentSeguimientoId: parentSeguimientoId ? Number(parentSeguimientoId) : null
+        });
+
+        if (!createdLogId) {
+          createdLogId = memLogId;
+        }
+      }
+
+      // Success response JSON
+      return res.json({
+        success: true,
+        message: 'Seguimiento registrado correctamente',
+        seguimiento: {
+          id: String(createdLogId),
+          aprendizFichaId,
+          instructor: insRecord.nombre,
+          tipoSeguimiento: tipoSeguimiento || 'Comunicación de seguimiento',
+          estadoIntervencion: nextIntervention,
+          observaciones: observacion || detailsText,
+          medioComunicacion: medioComunicacion || 'Otro',
+          fecha: new Date().toISOString().split('T')[0],
+          parentSeguimientoId: parentSeguimientoId ? Number(parentSeguimientoId) : null
+        }
+      });
+
+    } catch (error: any) {
+      console.error('[BITACORA_ENDPOINT_POST] Unexpected error:', error);
+      return res.status(500).json({ success: false, error: 'Error interno del servidor al registrar el seguimiento.' });
+    }
+  });
+
+  // NEW ENDPOINT: Fetch custom follow-ups / communications (Bitacora) for an apprentice
+  app.get('/api/aprendices/:aprendizFichaId/seguimientos', requireAuth, async (req: AuthRequest, res) => {
+    try {
+      const aprendizFichaId = Number(req.params.aprendizFichaId);
+
+      if (isNaN(aprendizFichaId)) {
+        return res.status(400).json({ success: false, error: 'ID de aprendiz inválido.' });
+      }
+
+      try {
+        const historyLogs = await db.select({
+          id: seguimientosHistorico.id,
+          fecha: seguimientosHistorico.fecha,
+          estadoPrevio: seguimientosHistorico.estadoPrevio,
+          estadoNuevo: seguimientosHistorico.estadoNuevo,
+          detalles: seguimientosHistorico.detalles,
+          compromisoFecha: seguimientosHistorico.compromisoFecha,
+          tipoSeguimiento: seguimientosHistorico.tipoSeguimiento,
+          evidenciasPendientes: seguimientosHistorico.evidenciasPendientes,
+          diasSinAcceso: seguimientosHistorico.diasSinAcceso,
+          numeroLlamado: seguimientosHistorico.numeroLlamado,
+          instructorNombre: instructores.nombre,
+          instructorCorreo: instructores.correo,
+          instructorRol: instructores.rol,
+          codigoFicha: seguimientosHistorico.codigoFicha,
+          usuarioResponsableNombre: seguimientosHistorico.usuarioResponsableNombre,
+          usuarioResponsableRol: seguimientosHistorico.usuarioResponsableRol,
+          medioComunicacion: seguimientosHistorico.medioComunicacion,
+          fechaRegistro: seguimientosHistorico.fechaRegistro,
+          fechaEnvioMensaje: seguimientosHistorico.fechaEnvioMensaje,
+          fechaRespuestaAprendiz: seguimientosHistorico.fechaRespuestaAprendiz,
+          fechaProximoSeguimiento: seguimientosHistorico.fechaProximoSeguimiento,
+          asunto: seguimientosHistorico.asunto,
+          cuerpoMensaje: seguimientosHistorico.cuerpoMensaje,
+          observacion: seguimientosHistorico.observacion,
+          respuestaAprendiz: seguimientosHistorico.respuestaAprendiz,
+          acuerdosEstablecidos: seguimientosHistorico.acuerdosEstablecidos,
+          compromisos: seguimientosHistorico.compromisos,
+          proximaAccion: seguimientosHistorico.proximaAccion,
+          fechaUltimoIngreso: seguimientosHistorico.fechaUltimoIngreso,
+          totalEvidencias: seguimientosHistorico.totalEvidencias,
+          evidenciasEnviadas: seguimientosHistorico.evidenciasEnviadas,
+          evidenciasAprobadas: seguimientosHistorico.evidenciasAprobadas,
+          evidenciasDesaprobadas: seguimientosHistorico.evidenciasDesaprobadas,
+          detalleEvidenciasPendientes: seguimientosHistorico.detalleEvidenciasPendientes,
+          creadoPorId: seguimientosHistorico.creadoPorId,
+          creadoPorNombre: seguimientosHistorico.creadoPorNombre,
+          creadoPorRol: seguimientosHistorico.creadoPorRol,
+          editablePorRol: seguimientosHistorico.editablePorRol,
+          origenRegistro: seguimientosHistorico.origenRegistro,
+          parentSeguimientoId: seguimientosHistorico.parentSeguimientoId
+        })
+        .from(seguimientosHistorico)
+        .leftJoin(instructores, eq(seguimientosHistorico.instructorId, instructores.id))
+        .where(eq(seguimientosHistorico.aprendizFichaId, aprendizFichaId))
+        .orderBy(desc(seguimientosHistorico.fecha));
+
+        const normalizedLogs = historyLogs.map(log => ({
+          id: String(log.id),
+          fecha: log.fecha.toISOString().split('T')[0],
+          instructor: log.usuarioResponsableNombre || log.creadoPorNombre || log.instructorNombre || 'Instructor',
+          detalle: log.detalles || `${log.observacion || ''}${log.compromisoFecha ? ` (Fecha compromiso: ${log.compromisoFecha})` : ''}`,
+          previo: log.estadoPrevio,
+          nuevo: log.estadoNuevo,
+          tipoSeguimiento: log.tipoSeguimiento,
+          evidenciasPendientes: log.evidenciasPendientes,
+          diasSinAcceso: log.diasSinAcceso,
+          numeroLlamado: log.numeroLlamado,
+          
+          codigoFicha: log.codigoFicha,
+          usuarioResponsableNombre: log.usuarioResponsableNombre || log.instructorNombre,
+          usuarioResponsableRol: log.usuarioResponsableRol || log.instructorRol,
+          medioComunicacion: log.medioComunicacion,
+          fechaRegistro: log.fechaRegistro ? log.fechaRegistro.toISOString() : undefined,
+          fechaEnvioMensaje: log.fechaEnvioMensaje,
+          fechaRespuestaAprendiz: log.fechaRespuestaAprendiz,
+          fechaProximoSeguimiento: log.fechaProximoSeguimiento,
+          asunto: log.asunto,
+          cuerpoMensaje: log.cuerpoMensaje,
+          observacion: log.observacion,
+          respuestaAprendiz: log.respuestaAprendiz,
+          acuerdosEstablecidos: log.acuerdosEstablecidos,
+          compromisos: log.compromisos,
+          proximaAccion: log.proximaAccion,
+          fechaUltimoIngreso: log.fechaUltimoIngreso,
+          totalEvidencias: log.totalEvidencias,
+          evidenciasEnviadas: log.evidenciasEnviadas,
+          evidenciasAprobadas: log.evidenciasAprobadas,
+          evidenciasDesaprobadas: log.evidenciasDesaprobadas,
+          detalleEvidenciasPendientes: log.detalleEvidenciasPendientes,
+          creadoPorId: log.creadoPorId,
+          creadoPorNombre: log.creadoPorNombre,
+          creadoPorRol: log.creadoPorRol,
+          editablePorRol: log.editablePorRol,
+          origenRegistro: log.origenRegistro,
+          parentSeguimientoId: log.parentSeguimientoId
+        }));
+
+        return res.json({ success: true, seguimientos: normalizedLogs });
+
+      } catch (dbErr) {
+        console.warn('[BITACORA_ENDPOINT_GET] Postgres query failed, using memoryFallback:', dbErr);
+        const memLogs = memoryDb.seguimientosHistorico
+          .filter(log => log.aprendizFichaId === aprendizFichaId)
+          .sort((a, b) => b.fecha.getTime() - a.fecha.getTime());
+
+        const normalizedLogs = memLogs.map(log => {
+          const inst = memoryDb.instructores.find(i => i.id === log.instructorId);
+          return {
+            id: String(log.id),
+            fecha: log.fecha.toISOString().split('T')[0],
+            instructor: log.usuarioResponsableNombre || log.creadoPorNombre || inst?.nombre || 'Instructor',
+            detalle: log.detalles || `${log.observacion || ''}${log.compromisoFecha ? ` (Fecha compromiso: ${log.compromisoFecha})` : ''}`,
+            previo: log.estadoPrevio,
+            nuevo: log.estadoNuevo,
+            tipoSeguimiento: log.tipoSeguimiento,
+            evidenciasPendientes: log.evidenciasPendientes,
+            diasSinAcceso: log.diasSinAcceso,
+            numeroLlamado: log.numeroLlamado,
+
+            codigoFicha: log.codigoFicha,
+            usuarioResponsableNombre: log.usuarioResponsableNombre || inst?.nombre,
+            usuarioResponsableRol: log.usuarioResponsableRol || inst?.rol,
+            medioComunicacion: log.medioComunicacion,
+            fechaRegistro: log.fechaRegistro ? log.fechaRegistro.toISOString() : undefined,
+            fechaEnvioMensaje: log.fechaEnvioMensaje,
+            fechaRespuestaAprendiz: log.fechaRespuestaAprendiz,
+            fechaProximoSeguimiento: log.fechaProximoSeguimiento,
+            asunto: log.asunto,
+            cuerpoMensaje: log.cuerpoMensaje,
+            observacion: log.observacion,
+            respuestaAprendiz: log.respuestaAprendiz,
+            acuerdosEstablecidos: log.acuerdosEstablecidos,
+            compromisos: log.compromisos,
+            proximaAccion: log.proximaAccion,
+            fechaUltimoIngreso: log.fechaUltimoIngreso,
+            totalEvidencias: log.totalEvidencias,
+            evidenciasEnviadas: log.evidenciasEnviadas,
+            evidenciasAprobadas: log.evidenciasAprobadas,
+            evidenciasDesaprobadas: log.evidenciasDesaprobadas,
+            detalleEvidenciasPendientes: log.detalleEvidenciasPendientes,
+            creadoPorId: log.creadoPorId,
+            creadoPorNombre: log.creadoPorNombre,
+            creadoPorRol: log.creadoPorRol,
+            editablePorRol: log.editablePorRol,
+            origenRegistro: log.origenRegistro,
+            parentSeguimientoId: log.parentSeguimientoId
+          };
+        });
+
+        return res.json({ success: true, seguimientos: normalizedLogs });
+      }
+    } catch (error: any) {
+      console.error('[BITACORA_ENDPOINT_GET] Unexpected error:', error);
+      return res.status(500).json({ success: false, error: 'Error interno del servidor al consultar seguimientos.' });
+    }
+  });
+
+  // NEW ENDPOINT: Update seguimiento (Bitacora) with cross-user modification block
+  app.put('/api/aprendices/:aprendizFichaId/seguimientos/:id', requireAuth, async (req: AuthRequest, res) => {
+    try {
+      const uid = req.user?.uid || '';
+      const trackingId = Number(req.params.id);
+
+      if (isNaN(trackingId)) {
+        return res.status(400).json({ success: false, error: 'ID de seguimiento inválido.' });
+      }
+
+      // Resolve Instructor profile
+      let insRecord: any = null;
+      try {
+        const list = await db.select().from(instructores).where(eq(instructores.uid, uid));
+        if (list.length > 0) insRecord = list[0];
+        else if (req.user?.email) {
+          const emailList = await db.select().from(instructores).where(eq(instructores.correo, req.user.email));
+          if (emailList.length > 0) insRecord = emailList[0];
+        }
+      } catch (e) {}
+      
+      if (!insRecord) {
+        insRecord = memoryDb.instructores.find(i => i.uid === uid || (req.user?.email && i.correo === req.user.email));
+      }
+
+      if (!insRecord) {
+        return res.status(403).json({ success: false, error: "No tienes permiso para modificar seguimientos." });
+      }
+
+      // Find the existing tracking log in Postgres
+      let pgLog: any = null;
+      try {
+        const results = await db.select().from(seguimientosHistorico).where(eq(seguimientosHistorico.id, trackingId));
+        if (results.length > 0) pgLog = results[0];
+      } catch (e) {}
+
+      // Find in memoryDb
+      let memLog = memoryDb.seguimientosHistorico.find(log => log.id === trackingId);
+
+      if (!pgLog && !memLog) {
+        return res.status(404).json({ success: false, error: 'No se encontró el registro de seguimiento.' });
+      }
+
+      // Check ownership: observations created by one user cannot be modified by another!
+      const creatorId = pgLog ? pgLog.instructorId : memLog.instructorId;
+      if (creatorId !== insRecord.id) {
+        return res.status(403).json({
+          success: false,
+          error: "No puedes modificar un registro de seguimiento creado por otro usuario. Si se requiere agregar nueva información, debes crear un nuevo registro."
+        });
+      }
+
+      const { observacion, detalles, respuestaAprendiz, acuerdosEstablecidos, compromisos, proximaAccion } = req.body;
+
+      if (pgLog) {
+        await db.update(seguimientosHistorico)
+          .set({
+            observacion: observacion !== undefined ? observacion : pgLog.observacion,
+            detalles: detalles !== undefined ? detalles : pgLog.detalles,
+            respuestaAprendiz: respuestaAprendiz !== undefined ? respuestaAprendiz : pgLog.respuestaAprendiz,
+            acuerdosEstablecidos: acuerdosEstablecidos !== undefined ? acuerdosEstablecidos : pgLog.acuerdosEstablecidos,
+            compromisos: compromisos !== undefined ? compromisos : pgLog.compromisos,
+            proximaAccion: proximaAccion !== undefined ? proximaAccion : pgLog.proximaAccion
+          })
+          .where(eq(seguimientosHistorico.id, trackingId));
+      }
+
+      if (memLog) {
+        if (observacion !== undefined) memLog.observacion = observacion;
+        if (detalles !== undefined) memLog.detalles = detalles;
+        if (respuestaAprendiz !== undefined) memLog.respuestaAprendiz = respuestaAprendiz;
+        if (acuerdosEstablecidos !== undefined) memLog.acuerdosEstablecidos = acuerdosEstablecidos;
+        if (compromisos !== undefined) memLog.compromisos = compromisos;
+        if (proximaAccion !== undefined) memLog.proximaAccion = proximaAccion;
+      }
+
+      return res.json({ success: true, message: 'Seguimiento actualizado correctamente' });
+
+    } catch (error: any) {
+      console.error('[BITACORA_ENDPOINT_PUT] Unexpected error:', error);
+      return res.status(500).json({ success: false, error: 'Error al actualizar el seguimiento.' });
     }
   });
 

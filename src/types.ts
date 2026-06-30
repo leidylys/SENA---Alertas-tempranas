@@ -14,7 +14,7 @@ export interface Intervencion {
   id: string;
   fecha: string;
   instructor: string;
-  estadoIntervencion: 'Sin intervención' | 'En seguimiento' | 'Intervenido' | 'Remitido a Bienestar' | 'Cerrado';
+  estadoIntervencion: string;
   estrategias?: string[];
   causas?: string[];
   estrategiaPersonalizada?: string;
@@ -29,6 +29,35 @@ export interface Intervencion {
   fechaLimite?: string;
   compromiso?: string;
   estadoCompromiso?: string;
+
+  // Bitacora consolidation fields
+  codigoFicha?: string | null;
+  usuarioResponsableNombre?: string | null;
+  usuarioResponsableRol?: string | null;
+  medioComunicacion?: string | null;
+  fechaRegistro?: string | null;
+  fechaEnvioMensaje?: string | null;
+  fechaRespuestaAprendiz?: string | null;
+  fechaProximoSeguimiento?: string | null;
+  asunto?: string | null;
+  cuerpoMensaje?: string | null;
+  observacion?: string | null;
+  respuestaAprendiz?: string | null;
+  acuerdosEstablecidos?: string | null;
+  compromisos?: string | null;
+  proximaAccion?: string | null;
+  fechaUltimoIngreso?: string | null;
+  totalEvidencias?: number | null;
+  evidenciasEnviadas?: number | null;
+  evidenciasAprobadas?: number | null;
+  evidenciasDesaprobadas?: number | null;
+  detalleEvidenciasPendientes?: string | null;
+  creadoPorId?: number | null;
+  creadoPorNombre?: string | null;
+  creadoPorRol?: string | null;
+  editablePorRol?: string | null;
+  origenRegistro?: string | null;
+  parentSeguimientoId?: number | null;
 }
 
 export interface Aprendiz {

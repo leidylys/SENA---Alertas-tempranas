@@ -1,8 +1,8 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { 
   Search, ArrowUpDown, ChevronDown, ChevronUp, Briefcase, 
   Sparkles, CheckSquare, Square, Filter, FileArchive, Download, Eye, Activity, Mail, Heart, FileText, AlertCircle, MoreVertical,
-  Clock, User, Copy, ExternalLink, Check
+  Clock, User, Copy, ExternalLink, Check, AlertTriangle, PlusCircle, CheckCircle2, Save, Loader2, Link, Plus, CornerDownRight
 } from 'lucide-react';
 import { Aprendiz, FichaInfo } from '../types';
 import { badgeNivel, badgeEstado, rowColorNivel, formatEvidenciaNombre } from '../utils/formatters';
@@ -31,6 +31,7 @@ interface AlertTableProps {
   onIntervenirIndividual: (aprendiz: Aprendiz) => void;
   onIntervenirMasivo: (aprendices: Aprendiz[]) => void;
   onEnviarLlamado: (aprendiz: Aprendiz) => void;
+  onSaveBitacoraSeguimiento?: (aprendizDbId: number, data: any) => Promise<any>;
 }
 
 function isAcademicCall(hist: { tipoSeguimiento?: string | null; numeroLlamado?: number | null }): boolean {
@@ -164,12 +165,14 @@ export default function AlertTable({
   onToggleSelectAll,
   onIntervenirIndividual,
   onIntervenirMasivo,
-  onEnviarLlamado
+  onEnviarLlamado,
+  onSaveBitacoraSeguimiento
 }: AlertTableProps) {
   
   // Track which rows are expanded to see history
   const [expandedDocIds, setExpandedDocIds] = useState<string[]>([]);
   const [expandedLlamadoId, setExpandedLlamadoId] = useState<string | null>(null);
+  const [respondingToSeguimiento, setRespondingToSeguimiento] = useState<Record<string, { parentId: string; label: string }>>({});
   const [copiedCallId, setCopiedCallId] = useState<string | null>(null);
   const [openActionMenuId, setOpenActionMenuId] = useState<string | null>(null);
   const [zipExporting, setZipExporting] = useState(false);
@@ -1483,6 +1486,83 @@ export default function AlertTable({
                                                       {parsed.cuerpo}
                                                     </div>
                                                   </div>
+
+                                                  {/* Child Responses nested list */}
+                                                  {(() => {
+                                                    const childResponses = (ap.historialIntervenciones || []).filter(
+                                                      child => child.parentSeguimientoId && String(child.parentSeguimientoId) === String(ll.id)
+                                                    );
+                                                    
+                                                    return (
+                                                      <div className="space-y-2 mt-3 pt-2.5 border-t border-slate-200/50">
+                                                        {childResponses.length > 0 && (
+                                                          <>
+                                                            <span className="font-bold text-[9px] text-slate-400 uppercase tracking-wider block mb-1.5">Respuestas / Actualizaciones:</span>
+                                                            <div className="space-y-2">
+                                                              {childResponses.map((child, cIdx) => (
+                                                                <div key={child.id || cIdx} className="pl-3 border-l-2 border-[#007832] bg-white p-2.5 rounded-lg space-y-1 text-[10px] shadow-5xs text-left">
+                                                                  <div className="flex items-center justify-between font-bold text-[#007832]">
+                                                                    <span>{child.tipoSeguimiento || 'Respuesta registrada'}</span>
+                                                                    <span className="text-slate-400 font-medium text-[9px]">{child.fecha}</span>
+                                                                  </div>
+                                                                  <div className="text-slate-500 text-[9px]">
+                                                                    <span className="font-semibold text-slate-400">Relacionado con:</span> {label}
+                                                                  </div>
+                                                                  <div className="text-slate-600 font-medium whitespace-pre-wrap">
+                                                                    {child.observaciones || child.detalle}
+                                                                  </div>
+                                                                  {child.respuestaAprendiz && (
+                                                                    <div>
+                                                                      <span className="font-bold text-slate-500">Respuesta/Justificación:</span> {child.respuestaAprendiz}
+                                                                    </div>
+                                                                  )}
+                                                                  {child.compromisos && (
+                                                                    <div>
+                                                                      <span className="font-bold text-slate-500">Acuerdos:</span> {child.compromisos}
+                                                                    </div>
+                                                                  )}
+                                                                  {child.proximaAccion && (
+                                                                    <div>
+                                                                      <span className="font-bold text-slate-500">Próxima acción:</span> {child.proximaAccion}
+                                                                    </div>
+                                                                  )}
+                                                                  <div className="pt-0.5 flex items-center justify-between">
+                                                                    <span className="text-[9px] font-bold bg-[#e6f2eb] text-[#007832] px-1.5 py-0.5 rounded border border-[#cbe5d7]">
+                                                                      Estado: {child.estadoIntervencion || 'Respondido'}
+                                                                    </span>
+                                                                  </div>
+                                                                </div>
+                                                              ))}
+                                                            </div>
+                                                          </>
+                                                        )}
+
+                                                        <div className="flex justify-end pt-1">
+                                                          <button
+                                                            type="button"
+                                                            onClick={(e) => {
+                                                              e.stopPropagation();
+                                                              setRespondingToSeguimiento(prev => ({
+                                                                ...prev,
+                                                                [ap.documento]: {
+                                                                  parentId: String(ll.id),
+                                                                  label: label
+                                                                }
+                                                              }));
+                                                              setTimeout(() => {
+                                                                const el = document.getElementById(`bitacora-logger-${ap.documento}`);
+                                                                if (el) el.scrollIntoView({ behavior: 'smooth' });
+                                                              }, 50);
+                                                            }}
+                                                            className="inline-flex items-center gap-1 px-2 py-1 bg-[#007832] hover:bg-[#005c24] text-white font-black text-[9px] rounded-lg transition-colors cursor-pointer shadow-3xs"
+                                                          >
+                                                            <PlusCircle className="w-3 h-3" />
+                                                            <span>Agregar respuesta o actualización</span>
+                                                          </button>
+                                                        </div>
+                                                      </div>
+                                                    );
+                                                  })()}
                                                 </div>
                                               )}
                                             </div>
@@ -1498,7 +1578,7 @@ export default function AlertTable({
                                   <span className="font-bold text-[9.5px] text-slate-500 uppercase block">E. Intervenciones:</span>
                                   {(() => {
                                     const intervenciones = (ap.historialIntervenciones || [])
-                                      .filter(hist => !isAcademicCall(hist));
+                                      .filter(hist => !isAcademicCall(hist) && !hist.parentSeguimientoId);
                                     
                                     if (intervenciones.length === 0) {
                                       return <span className="text-slate-400 italic text-[11px] block pl-1">Sin intervenciones académicas registradas</span>;
@@ -1507,7 +1587,7 @@ export default function AlertTable({
                                     return (
                                       <div className="space-y-2.5">
                                         {intervenciones.map((int, idx) => (
-                                          <div key={int.id || idx} className="p-2.5 bg-slate-50 border border-slate-150 rounded-lg text-[10.5px] text-slate-700 shadow-5xs">
+                                          <div key={int.id || idx} className="p-2.5 bg-slate-50 border border-slate-150 rounded-lg text-[10.5px] text-slate-700 shadow-5xs text-left">
                                             <div className="flex items-center justify-between font-bold text-slate-800 mb-1">
                                               <span>{int.tipoSeguimiento || 'Intervención de Apoyo'}</span>
                                               <span className="text-slate-400 font-medium text-[9px]">{int.fecha}</span>
@@ -1518,44 +1598,108 @@ export default function AlertTable({
                                               {int.fechaLimite && <div><strong>Límite:</strong> {int.fechaLimite}</div>}
                                               {int.estadoCompromiso && <div><strong>Estado del compromiso:</strong> {int.estadoCompromiso}</div>}
                                             </div>
-                                            <div className="mt-1.5">
+                                            
+                                            <div className="mt-2 flex items-center justify-between gap-2 border-t border-slate-200/50 pt-2">
                                               <span className="text-[9px] font-bold bg-white px-1.5 py-0.5 rounded border border-slate-250 text-slate-700">
                                                 Resultado: {int.estadoIntervencion}
                                               </span>
                                             </div>
+
+                                            {/* Nested child responses for this intervention */}
+                                            {(() => {
+                                              const childResponses = (ap.historialIntervenciones || []).filter(
+                                                child => child.parentSeguimientoId && String(child.parentSeguimientoId) === String(int.id)
+                                              );
+                                              
+                                              return (
+                                                <div className="space-y-1.5 mt-2 pt-2 border-t border-slate-200/50">
+                                                  {childResponses.map((child, cIdx) => (
+                                                    <div key={child.id || cIdx} className="pl-2 border-l-2 border-[#007832] bg-white p-2 rounded text-[9.5px] space-y-0.5 text-left font-sans">
+                                                      <div className="flex items-center justify-between font-bold text-[#007832]">
+                                                        <span>{child.tipoSeguimiento || 'Respuesta registrada'}</span>
+                                                        <span className="text-slate-400 font-medium text-[8px]">{child.fecha}</span>
+                                                      </div>
+                                                      <div className="text-slate-600 whitespace-pre-wrap">
+                                                        {child.observaciones || child.detalle}
+                                                      </div>
+                                                    </div>
+                                                  ))}
+                                                  
+                                                  <div className="flex justify-end pt-1">
+                                                    <button
+                                                      type="button"
+                                                      onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        setRespondingToSeguimiento(prev => ({
+                                                          ...prev,
+                                                          [ap.documento]: {
+                                                            parentId: String(int.id),
+                                                            label: int.tipoSeguimiento || 'Intervención de Apoyo'
+                                                          }
+                                                        }));
+                                                        setTimeout(() => {
+                                                          const el = document.getElementById(`bitacora-logger-${ap.documento}`);
+                                                          if (el) el.scrollIntoView({ behavior: 'smooth' });
+                                                        }, 50);
+                                                      }}
+                                                      className="inline-flex items-center gap-1 text-[9px] font-bold text-[#007832] hover:text-[#005c24] cursor-pointer"
+                                                    >
+                                                      <PlusCircle className="w-3 h-3" />
+                                                      <span>Agregar respuesta o actualización</span>
+                                                    </button>
+                                                  </div>
+                                                </div>
+                                              );
+                                            })()}
                                           </div>
                                         ))}
                                       </div>
                                     );
                                   })()}
                                 </div>
-
                               </div>
                             </div>
 
+                          </div>
+
+                          {/* New Full-Width Bitacora Logger Section */}
+                          <div id={`bitacora-logger-${ap.documento}`} className="mt-5">
+                            <BitacoraLogger
+                              aprendiz={ap}
+                              onSave={onSaveBitacoraSeguimiento}
+                              totalEv={getTotalCount(ap)}
+                              approvedEv={getACount(ap)}
+                              disapprovedEv={getDCount(ap)}
+                              pendingEv={getNoEntregasCount(ap)}
+                              onEnviarLlamado={onEnviarLlamado}
+                              onTriggerRemitirBienestar={(ap) => {
+                                setBienestarReferralLearner(ap);
+                                setIsReferralSent(false);
+                                setCauseBienestar(ap.diasSinAcceso && ap.diasSinAcceso > 30 
+                                  ? 'Inasistencia reiterada superior a 30 días sin justificar'
+                                  : 'Desmotivación académica / Cambio de programa de formación');
+                                setDescriptionBienestar('');
+                              }}
+                              onTriggerPlanMejora={(ap) => {
+                                setImprovementPlanLearner(ap);
+                                setIsPlanSaved(false);
+                                setStrategiesPlan('Sustentar de forma presencial u online las evidencias desaprobadas y pendientes mediante la entrega de talleres prácticos complementarios.');
+                                setCommitmentPlan('Me comprometo formalmente a asistir a las tutorías de acompañamiento docente y a realizar el cargue extemporáneo del portafolio en la plataforma LMS.');
+                              }}
+                              respondingToSeguimiento={respondingToSeguimiento[ap.documento] || null}
+                              onCancelResponse={() => setRespondingToSeguimiento(prev => {
+                                const copy = { ...prev };
+                                delete copy[ap.documento];
+                                return copy;
+                              })}
+                              fichaInfo={fichaInfo}
+                            />
                           </div>
 
                           {/* F. Acciones disponibles */}
                           <div className="mt-5 pt-4 border-t border-slate-200 flex flex-col sm:flex-row items-center justify-between gap-4">
                             <div className="flex flex-wrap items-center gap-2">
                               
-                              <button
-                                type="button"
-                                onClick={() => onIntervenirIndividual(ap)}
-                                className="bg-sena-50 hover:bg-sena-100 text-sena-800 text-xs py-1.5 px-3 rounded-md font-bold transition-all border border-sena-100 cursor-pointer"
-                              >
-                                Intervenir
-                              </button>
-
-                              <button
-                                type="button"
-                                onClick={() => onEnviarLlamado(ap)}
-                                className="bg-red-50 hover:bg-red-100 text-red-700 hover:text-red-800 text-xs py-1.5 px-3 rounded-md font-bold transition-all border border-red-100 flex items-center gap-1 cursor-pointer"
-                              >
-                                <Mail className="w-3.5 h-3.5" />
-                                Registrar llamado
-                              </button>
-
                               <button
                                 type="button"
                                 onClick={() => {
@@ -2169,6 +2313,722 @@ export default function AlertTable({
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+interface BitacoraLoggerProps {
+  aprendiz: Aprendiz;
+  onSave?: (aprendizDbId: number, data: any) => Promise<any>;
+  totalEv: number;
+  approvedEv: number;
+  disapprovedEv: number;
+  pendingEv: number;
+  onEnviarLlamado: (aprendiz: Aprendiz) => void;
+  onTriggerRemitirBienestar: (aprendiz: Aprendiz) => void;
+  onTriggerPlanMejora: (aprendiz: Aprendiz) => void;
+  respondingToSeguimiento: { parentId: string; label: string } | null;
+  onCancelResponse: () => void;
+  fichaInfo?: FichaInfo;
+}
+
+export function BitacoraLogger({
+  aprendiz,
+  onSave,
+  totalEv,
+  approvedEv,
+  disapprovedEv,
+  pendingEv,
+  onEnviarLlamado,
+  onTriggerRemitirBienestar,
+  onTriggerPlanMejora,
+  respondingToSeguimiento,
+  onCancelResponse,
+  fichaInfo
+}: BitacoraLoggerProps) {
+  const [tipoSeguimiento, setTipoSeguimiento] = useState('Comunicación de seguimiento');
+  const [medioComunicacion, setMedioComunicacion] = useState('WhatsApp');
+  const [asunto, setAsunto] = useState('');
+  const [observacion, setObservacion] = useState('');
+  const [fechaEnvioMensaje, setFechaEnvioMensaje] = useState(() => new Date().toISOString().split('T')[0]);
+  const [respuestaAprendiz, setRespuestaAprendiz] = useState('');
+  const [compromisos, setCompromisos] = useState('');
+  const [proximaAccion, setProximaAccion] = useState('');
+  const [estadoRespuesta, setEstadoRespuesta] = useState('Pendiente de respuesta');
+  
+  const [tipoRespuesta, setTipoRespuesta] = useState('Respuesta a llamado por correo');
+  const [fechaRespuesta, setFechaRespuesta] = useState(() => new Date().toISOString().split('T')[0]);
+  const [estadoFinal, setEstadoFinal] = useState('Respondido');
+
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [successMsg, setSuccessMsg] = useState<string | null>(null);
+
+  // Sync with respondingToSeguimiento trigger
+  useEffect(() => {
+    if (respondingToSeguimiento) {
+      setTipoRespuesta('Respuesta a llamado por correo');
+      setFechaRespuesta(new Date().toISOString().split('T')[0]);
+      setRespuestaAprendiz('');
+      setCompromisos('');
+      setProximaAccion('');
+      setEstadoFinal('Respondido');
+    }
+  }, [respondingToSeguimiento]);
+
+  // Set default observations depending on combination
+  useEffect(() => {
+    if (respondingToSeguimiento) {
+      // In response mode, do not overwrite states with initial template
+      return;
+    }
+
+    if (medioComunicacion === 'Correo electrónico') {
+      const getACountLocal = (learner: Aprendiz) => {
+        if (!learner || !learner.evidencias) return 0;
+        return Object.values(learner.evidencias).filter(v => {
+          const valStr = v && typeof v === 'object' ? (v as any).estado : String(v);
+          return valStr === 'A';
+        }).length;
+      };
+
+      const getDCountLocal = (learner: Aprendiz) => {
+        if (!learner || !learner.evidencias) return 0;
+        return Object.values(learner.evidencias).filter(v => {
+          const valStr = v && typeof v === 'object' ? (v as any).estado : String(v);
+          return valStr === 'D';
+        }).length;
+      };
+
+      const getTotalCountLocal = (learner: Aprendiz) => {
+        if (!learner || !learner.evidencias) return 0;
+        return Object.keys(learner.evidencias).length;
+      };
+
+      const totalEvidencias = getTotalCountLocal(aprendiz);
+      const totalAprobadas = getACountLocal(aprendiz);
+      const totalNoAprobadas = getDCountLocal(aprendiz);
+      const totalEnviadas = totalAprobadas + totalNoAprobadas;
+      const totalPendientes = totalEvidencias - totalAprobadas;
+      
+      const evs = aprendiz.evidencias || {};
+      const groupedPending: Record<string, Record<string, string[]>> = {};
+
+      Object.entries(evs).forEach(([key, value]) => {
+        let valStr = '';
+        let detail: any = null;
+        if (typeof value === 'object' && value !== null) {
+          valStr = (value as any).estado;
+          detail = value;
+        } else {
+          valStr = String(value);
+        }
+
+        if (valStr === 'D' || valStr === '-' || valStr === '' || !valStr) {
+          let faseName = 'Fase de Formación';
+          let actProyecto = 'Sin Actividad';
+
+          if (detail) {
+            if (detail.fase) faseName = detail.fase;
+            if (detail.actividadProyecto) actProyecto = detail.actividadProyecto;
+          } else {
+            const codeMatch = key.match(/(GA\d+-[A-Za-z0-9_-]+)/i);
+            if (codeMatch) {
+              const code = codeMatch[1].toUpperCase();
+              const actMatch = code.match(/^(GA\d+)/i);
+              if (actMatch) {
+                actProyecto = actMatch[1].toUpperCase();
+              }
+            } else {
+              const gaMatch = key.match(/(GA\d+)/i);
+              if (gaMatch) {
+                actProyecto = gaMatch[1].toUpperCase();
+              }
+            }
+          }
+
+          if (/GA(\d+)/i.test(actProyecto)) {
+            actProyecto = actProyecto.replace(/GA(\d+)/gi, 'AP$1');
+          }
+
+          if (!groupedPending[faseName]) {
+            groupedPending[faseName] = {};
+          }
+          if (!groupedPending[faseName][actProyecto]) {
+            groupedPending[faseName][actProyecto] = [];
+          }
+          groupedPending[faseName][actProyecto].push(key);
+        }
+      });
+
+      let listaEvidenciasStr = '';
+      if (totalPendientes > 0) {
+        const parts: string[] = [];
+        Object.entries(groupedPending).forEach(([fase, actividades]) => {
+          parts.push(`${fase}`);
+          Object.entries(actividades).forEach(([act, evsList]) => {
+            let actLabel = act;
+            if (/^AP(\d+)/i.test(act)) {
+              const num = act.match(/^AP(\d+)/i)?.[1];
+              actLabel = `Actividad de Proyecto ${num}`;
+            } else if (/^GA(\d+)/i.test(act)) {
+              const num = act.match(/^GA(\d+)/i)?.[1];
+              actLabel = `Actividad de Proyecto ${num}`;
+            }
+            parts.push(`${actLabel}`);
+            evsList.forEach(evName => {
+              parts.push(`* ${evName}`);
+            });
+            parts.push('');
+          });
+        });
+        listaEvidenciasStr = parts.join('\n').trim();
+      } else {
+        listaEvidenciasStr = 'No registra evidencias pendientes.';
+      }
+
+      let fraseTonoInteraccion = '';
+      const isCritical = aprendiz.estadoSeguimiento === 'Posible deserción' || aprendiz.estadoAcceso === 'Acceso crítico';
+
+      if (isCritical) {
+        fraseTonoInteraccion = 'Dada la cantidad de días sin acceso y las evidencias pendientes registradas, es importante establecer contacto a la mayor brevedad para revisar tu continuidad y definir acciones de acompañamiento.';
+      } else if (totalEnviadas > 0) {
+        fraseTonoInteraccion = 'Se evidencia que has realizado algunas entregas; sin embargo, aún registras evidencias pendientes que requieren atención.';
+      } else if (totalEnviadas === 0 && totalPendientes > 0) {
+        fraseTonoInteraccion = 'En el reporte cargado no se evidencian entregas registradas, por lo cual es importante validar tu situación académica y de acceso.';
+      }
+
+      const isAsuntoCritico = aprendiz.estadoSeguimiento === 'Posible deserción' || aprendiz.estadoAcceso === 'Acceso crítico' || aprendiz.estadoSeguimiento === 'Riesgo alto';
+      const emailAsunto = isAsuntoCritico
+        ? `Llamado académico por inasistencia y evidencias pendientes – Ficha ${fichaInfo?.numeroFicha || ''}`
+        : `Seguimiento académico y acceso a plataforma – Ficha ${fichaInfo?.numeroFicha || ''}`;
+
+      const emailCuerpo = `Apreciado/a ${aprendiz.nombre},
+
+Desde el seguimiento académico realizado a la ficha ${fichaInfo?.numeroFicha || ''}, se identifican novedades relacionadas con tu acceso a la plataforma y el estado de tus evidencias.
+
+${aprendiz.ultimoAcceso ? `Se evidencia que desde la fecha ${aprendiz.ultimoAcceso} presentas ${aprendiz.diasSinAcceso || 0} días sin ingresar a la plataforma.` : `No se registra ingreso reciente a la plataforma en el reporte cargado, por lo cual se requiere validar tu situación académica y de acceso.`}
+
+${fraseTonoInteraccion}
+
+Resumen académico:
+* Total de evidencias: ${totalEvidencias}
+* Evidencias enviadas: ${totalEnviadas} (Aprobadas: ${totalAprobadas} · Desaprobadas: ${totalNoAprobadas})
+* Evidencias aprobadas: ${totalAprobadas}
+* Evidencias desaprobadas: ${totalNoAprobadas}
+* Evidencias pendientes: ${totalPendientes}
+
+Las evidencias enviadas corresponden a las evidencias aprobadas y desaprobadas, ya que ambas reflejan interacción académica con la plataforma.
+
+Evidencias pendientes identificadas:
+${listaEvidenciasStr}
+
+Te invitamos cordialmente a ingresar a la plataforma LMS a la mayor brevedad posible para revisar detalladamente las evidencias pendientes mencionadas y ponerte al día con tus entregas. Si presentas inquietudes o requieres orientación pedagógica, responde a este correo o comunícate directamente con tu instructor responsable.
+
+Este seguimiento tiene como propósito acompañar tu proceso formativo y promover tu permanencia en la formación.
+
+Atentamente,
+${fichaInfo?.instructor || 'Instructor responsable'}
+Instructor de Formación
+Servicio Nacional de Aprendizaje (SENA)`;
+
+      setAsunto(emailAsunto);
+      setObservacion(emailCuerpo);
+    } else if (medioComunicacion === 'Llamada telefónica') {
+      setAsunto('Llamada telefónica de seguimiento');
+      setObservacion('Registre el resumen de la llamada realizada con el aprendiz.');
+    } else if (medioComunicacion === 'WhatsApp') {
+      setAsunto('Seguimiento vía WhatsApp');
+      setObservacion('Se envía mensaje de WhatsApp al aprendiz solicitando reporte de novedades académicas.');
+    } else {
+      setAsunto(`Contacto vía ${medioComunicacion}`);
+      setObservacion('');
+    }
+
+    setEstadoRespuesta('Pendiente de respuesta');
+  }, [medioComunicacion, aprendiz, respondingToSeguimiento, fichaInfo]);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMsg(null);
+    setSuccessMsg(null);
+
+    if (!onSave) {
+      setErrorMsg('El servicio de guardado no está configurado.');
+      return;
+    }
+
+    setIsSubmitting(true);
+
+    try {
+      let payload: any;
+      if (respondingToSeguimiento) {
+        payload = {
+          tipoSeguimiento: tipoRespuesta,
+          medioComunicacion: 'Respuesta / Actualización',
+          fechaEnvioMensaje: fechaRespuesta,
+          fechaRespuestaAprendiz: fechaRespuesta,
+          fechaProximoSeguimiento: null,
+          asunto: `Respuesta a: ${respondingToSeguimiento.label}`,
+          observacion: `[Respuesta registrada]
+Relacionado con: ${respondingToSeguimiento.label}
+Detalles de la respuesta: ${respuestaAprendiz.trim()}
+Acuerdos y compromisos: ${compromisos.trim() || 'Sin acuerdos particulares'}`,
+          respuestaAprendiz: respuestaAprendiz.trim() || null,
+          acuerdosEstablecidos: compromisos.trim() || null,
+          compromisos: compromisos.trim() || null,
+          proximaAccion: proximaAccion.trim() || null,
+          totalEvidencias: totalEv,
+          evidenciasEnviadas: approvedEv + disapprovedEv,
+          evidenciasAprobadas: approvedEv,
+          evidenciasDesaprobadas: disapprovedEv,
+          evidenciasPendientes: pendingEv,
+          diasSinAcceso: aprendiz.diasSinAcceso || 0,
+          fechaUltimoIngreso: aprendiz.ultimoAcceso || null,
+          origenRegistro: 'Instructor',
+          parentSeguimientoId: Number(respondingToSeguimiento.parentId),
+          estadoIntervencion: estadoFinal
+        };
+      } else {
+        const actualObservacion = observacion.trim();
+        if (!actualObservacion && tipoSeguimiento !== 'Remisión a Bienestar' && tipoSeguimiento !== 'Plan de mejora') {
+          setErrorMsg('La observación o detalle es requerido para continuar.');
+          setIsSubmitting(false);
+          return;
+        }
+
+        payload = {
+          tipoSeguimiento,
+          medioComunicacion,
+          fechaEnvioMensaje,
+          fechaRespuestaAprendiz: null,
+          fechaProximoSeguimiento: null,
+          asunto: asunto.trim() || `Seguimiento académico - ${medioComunicacion}`,
+          observacion: actualObservacion,
+          respuestaAprendiz: null,
+          acuerdosEstablecidos: null,
+          compromisos: null,
+          proximaAccion: proximaAccion.trim() || null,
+          totalEvidencias: totalEv,
+          evidenciasEnviadas: approvedEv + disapprovedEv,
+          evidenciasAprobadas: approvedEv,
+          evidenciasDesaprobadas: disapprovedEv,
+          evidenciasPendientes: pendingEv,
+          diasSinAcceso: aprendiz.diasSinAcceso || 0,
+          fechaUltimoIngreso: aprendiz.ultimoAcceso || null,
+          origenRegistro: 'Instructor',
+          parentSeguimientoId: null,
+          estadoIntervencion: 'Pendiente de respuesta'
+        };
+
+        if (medioComunicacion === 'Correo electrónico') {
+          payload.isLlamadoOficial = true;
+          payload.aprendizDocumento = aprendiz.documento;
+          payload.aprendizCorreo = aprendiz.correo || '';
+        }
+      }
+
+      await onSave(aprendiz.dbId || Number(aprendiz.id), payload);
+      setSuccessMsg('¡Seguimiento registrado exitosamente en la bitácora!');
+      
+      if (respondingToSeguimiento) {
+        onCancelResponse();
+      }
+
+      setAsunto('');
+      setObservacion('');
+      setRespuestaAprendiz('');
+      setCompromisos('');
+      setProximaAccion('');
+      
+      setTimeout(() => {
+        setSuccessMsg(null);
+      }, 3500);
+
+    } catch (err: any) {
+      console.error('[BITACORA_LOGGER] Save error:', err);
+      setErrorMsg(err.message || 'Error al guardar el evento en la bitácora.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const isFormValid = useMemo(() => {
+    if (respondingToSeguimiento) {
+      return !!respuestaAprendiz.trim();
+    } else {
+      if (!tipoSeguimiento) return false;
+      if (!medioComunicacion) return false;
+      if (!fechaEnvioMensaje) return false;
+      return !!observacion.trim();
+    }
+  }, [respondingToSeguimiento, tipoSeguimiento, medioComunicacion, fechaEnvioMensaje, observacion, respuestaAprendiz]);
+
+  const buttonText = useMemo(() => {
+    if (respondingToSeguimiento) {
+      return "Registrar respuesta / actualización";
+    }
+    if (medioComunicacion === 'Correo electrónico') {
+      return "Continuar con correo";
+    }
+    if (medioComunicacion === 'Llamada telefónica' || medioComunicacion === 'WhatsApp') {
+      return "Registrar comunicación";
+    }
+    return "Continuar";
+  }, [respondingToSeguimiento, medioComunicacion]);
+
+  return (
+    <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 shadow-sm text-left">
+      <div className="flex items-center gap-2 border-b border-slate-200 pb-3 mb-4">
+        <div className="bg-red-100 p-1.5 rounded-lg text-red-650">
+          <FileText className="w-4 h-4" />
+        </div>
+        <div>
+          <h3 className="font-extrabold text-slate-800 text-xs uppercase tracking-wider font-sans">
+            Registrar seguimiento o comunicación en bitácora
+          </h3>
+          <p className="text-[10px] text-slate-500 font-medium">
+            Centraliza y documenta cada acción realizada con el aprendiz {aprendiz.nombre}
+          </p>
+        </div>
+      </div>
+
+      {respondingToSeguimiento && (
+        <div className="bg-blue-50 border border-blue-200 p-2.5 rounded-lg mb-4 text-blue-800 text-xs flex items-center justify-between font-medium">
+          <div className="flex items-center gap-1.5">
+            <Link className="w-4 h-4 text-blue-600 animate-pulse shrink-0" />
+            <span>
+              Respondiendo o actualizando: <strong className="font-extrabold">{respondingToSeguimiento.label}</strong>
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={onCancelResponse}
+            className="text-[10px] font-bold text-blue-600 hover:text-blue-850 underline focus:outline-none shrink-0"
+          >
+            Cancelar respuesta
+          </button>
+        </div>
+      )}
+
+      {errorMsg && (
+        <div className="p-3 bg-red-50 text-red-700 border border-red-200 rounded-lg font-medium text-xs mb-4">
+          ⚠️ {errorMsg}
+        </div>
+      )}
+
+      {successMsg && (
+        <div className="p-3 bg-emerald-50 text-emerald-800 border border-emerald-200 rounded-lg font-bold text-xs mb-4 flex items-center gap-2">
+          <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+          <span>{successMsg}</span>
+        </div>
+      )}
+
+      <form onSubmit={handleSubmit} className="space-y-4">
+        {respondingToSeguimiento ? (
+          /* ========================================================= */
+          /* RESPONSE / UPDATE MODE (Agregar respuesta o actualización) */
+          /* ========================================================= */
+          <div className="space-y-4 animate-fade-in text-xs">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div>
+                <label className="block text-[10px] font-black text-slate-700 uppercase mb-1.5 font-sans">
+                  Tipo de respuesta / actualización:
+                </label>
+                <select
+                  value={tipoRespuesta}
+                  onChange={e => setTipoRespuesta(e.target.value)}
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white font-bold text-slate-800 focus:border-[#007832] focus:ring-1 focus:ring-[#007832] outline-none"
+                >
+                  <option value="Respuesta a llamado por correo">Respuesta a llamado por correo</option>
+                  <option value="Respuesta por WhatsApp">Respuesta por WhatsApp</option>
+                  <option value="Acuerdo telefónico">Acuerdo telefónico</option>
+                  <option value="Sin respuesta después de seguimiento">Sin respuesta después de seguimiento</option>
+                  <option value="Nuevo compromiso académico">Nuevo compromiso académico</option>
+                  <option value="Caso continúa en seguimiento">Caso continúa en seguimiento</option>
+                  <option value="Caso cerrado por contacto efectivo">Caso cerrado por contacto efectivo</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-black text-slate-700 uppercase mb-1.5 font-sans">
+                  Fecha de respuesta / contacto:
+                </label>
+                <input
+                  type="date"
+                  value={fechaRespuesta}
+                  onChange={e => setFechaRespuesta(e.target.value)}
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white font-bold text-slate-800 focus:border-[#007832] focus:ring-1 focus:ring-[#007832] outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-black text-slate-700 uppercase mb-1.5 font-sans">
+                  Estado final del seguimiento:
+                </label>
+                <select
+                  value={estadoFinal}
+                  onChange={e => setEstadoFinal(e.target.value)}
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white font-bold text-slate-800 focus:border-[#007832] focus:ring-1 focus:ring-[#007832] outline-none"
+                >
+                  <option value="Respondido">Respondido</option>
+                  <option value="Acuerdo establecido">Acuerdo establecido</option>
+                  <option value="Sin respuesta">Sin respuesta</option>
+                  <option value="Requiere nuevo seguimiento">Requiere nuevo seguimiento</option>
+                  <option value="Cerrado">Cerrado</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-[10px] font-black text-slate-700 uppercase mb-1.5 font-sans">
+                  Respuesta, justificación u observaciones recibidas:
+                </label>
+                <textarea
+                  rows={3}
+                  placeholder="Escribe aquí los argumentos del aprendiz o el resultado del contacto..."
+                  value={respuestaAprendiz}
+                  onChange={e => setRespuestaAprendiz(e.target.value)}
+                  required
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white font-semibold text-slate-800 outline-none focus:border-[#007832] focus:ring-1 focus:ring-[#007832] leading-normal font-sans"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-black text-slate-700 uppercase mb-1.5 font-sans">
+                  Acuerdos alcanzados y compromisos académicos:
+                </label>
+                <textarea
+                  rows={3}
+                  placeholder="Establece los compromisos de entrega y fechas pactadas..."
+                  value={compromisos}
+                  onChange={e => setCompromisos(e.target.value)}
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white font-semibold text-slate-800 outline-none focus:border-[#007832] focus:ring-1 focus:ring-[#007832] leading-normal font-sans"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-[10px] font-black text-slate-700 uppercase mb-1.5 font-sans">
+                Próxima acción, si aplica:
+              </label>
+              <input
+                type="text"
+                placeholder="Ej. Validar entregas el próximo lunes"
+                value={proximaAccion}
+                onChange={e => setProximaAccion(e.target.value)}
+                className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white font-semibold text-slate-800 outline-none focus:border-[#007832] focus:ring-1 focus:ring-[#007832]"
+              />
+            </div>
+
+            <div className="pt-3 border-t border-slate-200 flex items-center justify-between gap-3 bg-white p-3 rounded-lg border border-slate-200">
+              <span className="text-[10px] text-slate-500 font-bold max-w-sm">
+                ⚠️ Al registrar, esta respuesta se creará como un registro independiente relacionado con el seguimiento original para garantizar la trazabilidad completa.
+              </span>
+              
+              <div className="flex items-center gap-2 shrink-0">
+                {!isFormValid && (
+                  <span className="text-[10px] text-amber-600 font-bold bg-amber-50 px-2 py-1 rounded border border-amber-200 mr-2">
+                    Diligenciar la respuesta / justificación
+                  </span>
+                )}
+                <button
+                  type="submit"
+                  disabled={isSubmitting || !isFormValid}
+                  className={`font-black text-xs py-2 px-5 rounded-lg shadow-sm flex items-center gap-1.5 transition-all cursor-pointer ${
+                    isFormValid 
+                      ? 'bg-[#007832] hover:bg-[#005c24] text-white' 
+                      : 'bg-slate-300 text-slate-500 cursor-not-allowed opacity-60'
+                  }`}
+                >
+                  {isSubmitting ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>Guardando...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Save className="w-3.5 h-3.5" />
+                      <span>{buttonText}</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : (
+          /* ========================================================= */
+          /* INITIAL CREATION MODE (Creación inicial de seguimiento)   */
+          /* ========================================================= */
+          <div className="space-y-4 animate-fade-in text-xs">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div>
+                <label className="block text-[10px] font-black text-slate-700 uppercase mb-1.5 font-sans">
+                  Tipo de acción / evento:
+                </label>
+                <select
+                  value={tipoSeguimiento}
+                  onChange={e => setTipoSeguimiento(e.target.value)}
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white font-bold text-slate-800 focus:border-[#007832] focus:ring-1 focus:ring-[#007832] outline-none"
+                >
+                  <option value="Comunicación de seguimiento">Comunicación con aprendiz</option>
+                  <option value="Remisión a Bienestar">Remisión a Bienestar</option>
+                  <option value="Plan de mejora">Plan de mejora</option>
+                  <option value="Cierre del caso">Cierre o actualización de caso</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-black text-slate-700 uppercase mb-1.5 font-sans">
+                  Medio de comunicación:
+                </label>
+                <select
+                  value={medioComunicacion}
+                  onChange={e => setMedioComunicacion(e.target.value)}
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white font-bold text-slate-800 focus:border-[#007832] focus:ring-1 focus:ring-[#007832] outline-none"
+                >
+                  <option value="WhatsApp">WhatsApp</option>
+                  <option value="Correo electrónico">Correo electrónico (Llamado oficial)</option>
+                  <option value="Llamada telefónica">Llamada telefónica</option>
+                  <option value="Presencial">Reunión Presencial</option>
+                  <option value="Otro">Otro medio</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-black text-slate-700 uppercase mb-1.5 font-sans">
+                  Fecha de la acción:
+                </label>
+                <input
+                  type="date"
+                  value={fechaEnvioMensaje}
+                  onChange={e => setFechaEnvioMensaje(e.target.value)}
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white font-bold text-slate-800 focus:border-[#007832] focus:ring-1 focus:ring-[#007832] outline-none"
+                />
+              </div>
+            </div>
+
+            {tipoSeguimiento === 'Remisión a Bienestar' ? (
+              <div className="bg-rose-50 border border-rose-200 rounded-xl p-3.5 text-rose-900 space-y-3">
+                <div className="flex items-start gap-2.5">
+                  <Heart className="w-5 h-5 text-rose-600 fill-current shrink-0 mt-0.5" />
+                  <div>
+                    <h4 className="font-black text-rose-950">Remisión formal a Bienestar al Aprendiz</h4>
+                    <p className="text-[11px] leading-relaxed mt-1 text-rose-800">
+                      Para remitir de forma oficial a Bienestar al aprendiz, se requiere diligenciar el formulario completo que gestiona alertas socioemocionales, ausentismo crónico, desmotivación o problemas de salud.
+                    </p>
+                  </div>
+                </div>
+                <div className="pt-2">
+                  <button
+                    type="button"
+                    onClick={() => onTriggerRemitirBienestar(aprendiz)}
+                    className="bg-rose-600 hover:bg-rose-700 text-white font-black px-4 py-2 rounded-lg text-xs transition-all shadow-xs flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Heart className="w-4 h-4 fill-current" />
+                    <span>Abrir Formulario de Remisión Completo</span>
+                  </button>
+                </div>
+              </div>
+            ) : tipoSeguimiento === 'Plan de mejora' ? (
+              <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3.5 text-emerald-950 space-y-3">
+                <div className="flex items-start gap-2.5">
+                  <FileText className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
+                  <div>
+                    <h4 className="font-black text-emerald-950">Plan de Mejoramiento Académico</h4>
+                    <p className="text-[11px] leading-relaxed mt-1 text-emerald-800">
+                      El plan de mejoramiento académico permite establecer estrategias pedagógicas específicas, actividades de recuperación y fechas límites de entrega formales que serán notificadas para salvar la ficha.
+                    </p>
+                  </div>
+                </div>
+                <div className="pt-2">
+                  <button
+                    type="button"
+                    onClick={() => onTriggerPlanMejora(aprendiz)}
+                    className="bg-emerald-600 hover:bg-emerald-700 text-white font-black px-4 py-2 rounded-lg text-xs transition-all shadow-xs flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <FileText className="w-4 h-4" />
+                    <span>Iniciar Creador de Plan de Mejora</span>
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {medioComunicacion === 'Correo electrónico' && (
+                  <div className="bg-amber-50 border border-amber-200 rounded-xl p-3.5 mb-2.5 text-amber-900 flex items-start gap-3 animate-fade-in">
+                    <Mail className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                    <div>
+                      <h4 className="font-black text-amber-950">Asistente de Llamado por Correo Electrónico Activo</h4>
+                      <p className="text-[11px] leading-relaxed mt-1 text-amber-850">
+                        El cuerpo del correo ha sido generado de forma automática con el reporte detallado de las evidencias desaprobadas y pendientes del aprendiz. Puede revisar y modificar el texto a continuación antes de enviarlo. Al registrar se incrementará automáticamente el contador de llamados de atención oficiales.
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="block text-[10px] font-black text-slate-700 uppercase font-sans">
+                      Observación / Detalle de la comunicación (Requerido):
+                    </label>
+                    <span className="text-[10px] font-extrabold text-[#007832] bg-[#e6f2eb] px-2 py-0.5 rounded border border-[#cbe5d7]">
+                      Estado inicial: Pendiente de respuesta
+                    </span>
+                  </div>
+                  <textarea
+                    rows={medioComunicacion === 'Correo electrónico' ? 8 : 4}
+                    placeholder={
+                      medioComunicacion === 'Llamada telefónica' 
+                        ? "Registre el resumen de la llamada realizada con el aprendiz." 
+                        : "Escribe el detalle de lo conversado, el medio, si contestó, etc."
+                    }
+                    value={observacion}
+                    onChange={e => setObservacion(e.target.value)}
+                    required
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white font-semibold text-slate-800 outline-none focus:border-[#007832] focus:ring-1 focus:ring-[#007832] leading-normal font-sans"
+                  />
+                </div>
+
+                <div className="pt-3 border-t border-slate-200 flex items-center justify-between gap-3 bg-white p-3 rounded-lg border border-slate-200">
+                  <span className="text-[10px] text-slate-500 font-bold max-w-sm">
+                    ⚠️ Al registrar, esta comunicación oficial quedará guardada en la bitácora con estado <strong>Pendiente de respuesta</strong>.
+                  </span>
+                  
+                  <div className="flex items-center gap-2 shrink-0">
+                    {!isFormValid && (
+                      <span className="text-[10px] text-amber-600 font-bold bg-amber-50 px-2 py-1 rounded border border-amber-200 mr-2">
+                        Falta: Diligenciar el detalle
+                      </span>
+                    )}
+                    <button
+                      type="submit"
+                      disabled={isSubmitting || !isFormValid}
+                      className={`font-black text-xs py-2 px-5 rounded-lg shadow-sm flex items-center gap-1.5 transition-all cursor-pointer ${
+                        isFormValid 
+                          ? 'bg-[#007832] hover:bg-[#005c24] text-white' 
+                          : 'bg-slate-300 text-slate-500 cursor-not-allowed opacity-60'
+                      }`}
+                    >
+                      {isSubmitting ? (
+                        <>
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          <span>Guardando...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Save className="w-3.5 h-3.5" />
+                          <span>{buttonText}</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </form>
     </div>
   );
 }

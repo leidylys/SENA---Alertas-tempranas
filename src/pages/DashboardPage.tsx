@@ -5,7 +5,7 @@ import {
   Upload, Loader2, CheckCircle2, AlertCircle, CalendarClock, Trash2,
   FileSpreadsheet, ArrowLeft, ShieldCheck, X, Check, Mail, Send, Copy, ExternalLink
 } from 'lucide-react';
-import { Aprendiz, Fase, FichaInfo } from '../types';
+import { Aprendiz, Fase, FichaInfo, Intervencion } from '../types';
 import DashboardCards from '../components/DashboardCards';
 import PhaseSelector from '../components/PhaseSelector';
 import AlertTable from '../components/AlertTable';
@@ -13,7 +13,7 @@ import StrategyModal from '../components/StrategyModal';
 import ReportModal from '../components/ReportModal';
 import { useAlertasStore } from '../hooks/useAlertasStore';
 import { auth } from '../lib/firebase.ts';
-import { saveIndividualIntervention, saveBulkIntervention, syncLearnersToDb } from '../lib/api.ts';
+import { saveIndividualIntervention, saveBulkIntervention, syncLearnersToDb, saveBitacoraSeguimiento } from '../lib/api.ts';
 import { leerArchivoExcel, leerArchivoExcel2D, detectarFases, normalizarAprendices, combinarDatos, detectExcelReportType, parseReporteAprendicesExcel } from '../utils/excelParser';
 import { procesarTodosLosAprendices } from '../utils/riskCalculator';
 
@@ -857,6 +857,118 @@ ${emailCuerpo}`;
     }
   };
 
+  const handleSaveBitacoraSeguimiento = async (
+    aprendizDbId: number,
+    datosSeguimiento: any
+  ) => {
+    try {
+      const activeToken = await getFreshToken();
+      let result;
+
+      if (datosSeguimiento.isLlamadoOficial) {
+        const safeBase64Encode = (str: string) => {
+          try {
+            return btoa(unescape(encodeURIComponent(str)));
+          } catch (e) {
+            return btoa(str);
+          }
+        };
+
+        const res = await fetch('/api/aprendices/enviar-llamado', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${activeToken}`
+          },
+          body: JSON.stringify({
+            userDoc: datosSeguimiento.aprendizDocumento,
+            fichaId: fichaInfo?.numeroFicha,
+            asunto: datosSeguimiento.asunto || 'Llamado académico',
+            correo: datosSeguimiento.aprendizCorreo || '',
+            mensaje: safeBase64Encode(datosSeguimiento.observacion),
+            isBase64: true,
+            evidenciasPendientes: datosSeguimiento.evidenciasPendientes,
+            diasSinAcceso: datosSeguimiento.diasSinAcceso || 0,
+            ultimoAcceso: datosSeguimiento.fechaUltimoIngreso,
+            totalEvidencias: datosSeguimiento.totalEvidencias,
+            evidenciasEnviadas: datosSeguimiento.evidenciasEnviadas,
+            evidenciasAprobadas: datosSeguimiento.evidenciasAprobadas,
+            evidenciasDesaprobadas: datosSeguimiento.evidenciasDesaprobadas,
+            observacion: `Registro de llamado.`
+          })
+        });
+
+        if (!res.ok) {
+          const errData = await res.json().catch(() => null);
+          throw new Error(errData?.error || 'Error al registrar el llamado académico oficial.');
+        }
+
+        const resJson = await res.json();
+        
+        result = {
+          success: true,
+          seguimiento: {
+            id: String(resJson.llamado.id),
+            fecha: resJson.llamado.fecha,
+            instructor: resJson.llamado.instructor,
+            estadoIntervencion: resJson.llamado.estadoIntervencion || 'En seguimiento',
+            observaciones: resJson.llamado.observaciones || 'Registro de llamado.',
+            tipoSeguimiento: resJson.llamado.tipoSeguimiento,
+            numeroLlamado: resJson.llamado.numeroLlamado
+          }
+        };
+      } else {
+        result = await saveBitacoraSeguimiento(activeToken, aprendizDbId, datosSeguimiento);
+      }
+      
+      const targetLearner = store.aprendices.find(ap => ap.dbId === aprendizDbId || Number(ap.id) === aprendizDbId);
+      if (targetLearner) {
+        const completeIntervencion: Intervencion = {
+          id: String(result.seguimiento.id),
+          fecha: result.seguimiento.fecha,
+          instructor: result.seguimiento.instructor,
+          estadoIntervencion: result.seguimiento.estadoIntervencion || 'En seguimiento',
+          detalle: datosSeguimiento.observacion || result.seguimiento.observaciones || 'Seguimiento en bitácora',
+          previo: targetLearner.estadoIntervencion,
+          nuevo: result.seguimiento.estadoIntervencion,
+          tipoSeguimiento: result.seguimiento.tipoSeguimiento || datosSeguimiento.tipoSeguimiento,
+          evidenciasPendientes: datosSeguimiento.evidenciasPendientes,
+          diasSinAcceso: datosSeguimiento.diasSinAcceso,
+          medioComunicacion: datosSeguimiento.medioComunicacion,
+          fechaRegistro: new Date().toISOString(),
+          fechaEnvioMensaje: datosSeguimiento.fechaEnvioMensaje,
+          fechaRespuestaAprendiz: datosSeguimiento.fechaRespuestaAprendiz,
+          fechaProximoSeguimiento: datosSeguimiento.fechaProximoSeguimiento,
+          asunto: datosSeguimiento.asunto,
+          cuerpoMensaje: datosSeguimiento.isLlamadoOficial ? datosSeguimiento.observacion : datosSeguimiento.cuerpoMensaje,
+          observacion: datosSeguimiento.observacion,
+          respuestaAprendiz: datosSeguimiento.respuestaAprendiz,
+          compromisos: datosSeguimiento.compromisos,
+          proximaAccion: datosSeguimiento.proximaAccion,
+          totalEvidencias: datosSeguimiento.totalEvidencias,
+          evidenciasEnviadas: datosSeguimiento.evidenciasEnviadas,
+          evidenciasAprobadas: datosSeguimiento.evidenciasAprobadas,
+          evidenciasDesaprobadas: datosSeguimiento.evidenciasDesaprobadas,
+          origenRegistro: datosSeguimiento.origenRegistro || 'Instructor',
+          creadoPorNombre: result.seguimiento.instructor,
+          usuarioResponsableNombre: result.seguimiento.instructor,
+          numeroLlamado: result.seguimiento.numeroLlamado,
+          parentSeguimientoId: datosSeguimiento.parentSeguimientoId
+        };
+
+        store.aplicarIntervencionIndividual(
+          targetLearner.documento,
+          result.seguimiento.estadoIntervencion,
+          completeIntervencion
+        );
+      }
+      return result;
+    } catch (err: any) {
+      console.error('[BITACORA_SAVE_ERROR]', err);
+      throw err;
+    }
+  };
+
   return (
     <div className="space-y-6" id="dashboard-page-view">
       
@@ -1457,6 +1569,7 @@ ${emailCuerpo}`;
             onIntervenirIndividual={triggerIndividualIntervention}
             onIntervenirMasivo={triggerBulkIntervention}
             onEnviarLlamado={triggerEnviarLlamadoModal}
+            onSaveBitacoraSeguimiento={handleSaveBitacoraSeguimiento}
           />
         </div>
 
