@@ -905,60 +905,61 @@ ${emailCuerpo}`;
 
         const resJson = await res.json();
         
+        if (!resJson.success || !resJson.llamado) {
+          throw new Error(resJson.error || 'No fue posible registrar el llamado académico oficial.');
+        }
+
         result = {
           success: true,
-          seguimiento: {
-            id: String(resJson.llamado.id),
-            fecha: resJson.llamado.fecha,
-            instructor: resJson.llamado.instructor,
-            estadoIntervencion: resJson.llamado.estadoIntervencion || 'En seguimiento',
-            observaciones: resJson.llamado.observaciones || 'Registro de llamado.',
-            tipoSeguimiento: resJson.llamado.tipoSeguimiento,
-            numeroLlamado: resJson.llamado.numeroLlamado
-          }
+          seguimiento: resJson.llamado
         };
       } else {
         result = await saveBitacoraSeguimiento(activeToken, aprendizDbId, datosSeguimiento);
       }
+
+      if (!result?.success || !result?.seguimiento) {
+        throw new Error(result?.error || 'No fue posible registrar el seguimiento en la bitácora.');
+      }
       
       const targetLearner = store.aprendices.find(ap => ap.dbId === aprendizDbId || Number(ap.id) === aprendizDbId);
       if (targetLearner) {
+        const seguimiento = result.seguimiento;
         const completeIntervencion: Intervencion = {
-          id: String(result.seguimiento.id),
-          fecha: result.seguimiento.fecha,
-          instructor: result.seguimiento.instructor,
-          estadoIntervencion: result.seguimiento.estadoIntervencion || 'En seguimiento',
-          detalle: datosSeguimiento.observacion || result.seguimiento.observaciones || 'Seguimiento en bitácora',
+          id: String(seguimiento.id),
+          fecha: seguimiento.fecha,
+          instructor: seguimiento.instructor,
+          estadoIntervencion: seguimiento.estadoIntervencion || 'En seguimiento',
+          detalle: seguimiento.detalle || seguimiento.observaciones || datosSeguimiento.observacion || 'Seguimiento en bitácora',
           previo: targetLearner.estadoIntervencion,
-          nuevo: result.seguimiento.estadoIntervencion,
-          tipoSeguimiento: result.seguimiento.tipoSeguimiento || datosSeguimiento.tipoSeguimiento,
-          evidenciasPendientes: datosSeguimiento.evidenciasPendientes,
-          diasSinAcceso: datosSeguimiento.diasSinAcceso,
-          medioComunicacion: datosSeguimiento.medioComunicacion,
-          fechaRegistro: new Date().toISOString(),
-          fechaEnvioMensaje: datosSeguimiento.fechaEnvioMensaje,
-          fechaRespuestaAprendiz: datosSeguimiento.fechaRespuestaAprendiz,
-          fechaProximoSeguimiento: datosSeguimiento.fechaProximoSeguimiento,
-          asunto: datosSeguimiento.asunto,
-          cuerpoMensaje: datosSeguimiento.isLlamadoOficial ? datosSeguimiento.observacion : datosSeguimiento.cuerpoMensaje,
-          observacion: datosSeguimiento.observacion,
-          respuestaAprendiz: datosSeguimiento.respuestaAprendiz,
-          compromisos: datosSeguimiento.compromisos,
-          proximaAccion: datosSeguimiento.proximaAccion,
-          totalEvidencias: datosSeguimiento.totalEvidencias,
-          evidenciasEnviadas: datosSeguimiento.evidenciasEnviadas,
-          evidenciasAprobadas: datosSeguimiento.evidenciasAprobadas,
-          evidenciasDesaprobadas: datosSeguimiento.evidenciasDesaprobadas,
-          origenRegistro: datosSeguimiento.origenRegistro || 'Instructor',
-          creadoPorNombre: result.seguimiento.instructor,
-          usuarioResponsableNombre: result.seguimiento.instructor,
-          numeroLlamado: result.seguimiento.numeroLlamado,
-          parentSeguimientoId: datosSeguimiento.parentSeguimientoId
+          nuevo: seguimiento.estadoIntervencion,
+          tipoSeguimiento: seguimiento.tipoSeguimiento || datosSeguimiento.tipoSeguimiento,
+          evidenciasPendientes: seguimiento.evidenciasPendientes ?? datosSeguimiento.evidenciasPendientes,
+          diasSinAcceso: seguimiento.diasSinAcceso ?? datosSeguimiento.diasSinAcceso,
+          medioComunicacion: seguimiento.medioComunicacion || datosSeguimiento.medioComunicacion,
+          fechaRegistro: seguimiento.fechaRegistro || new Date().toISOString(),
+          fechaEnvioMensaje: seguimiento.fechaEnvioMensaje || datosSeguimiento.fechaEnvioMensaje,
+          fechaRespuestaAprendiz: seguimiento.fechaRespuestaAprendiz || datosSeguimiento.fechaRespuestaAprendiz,
+          fechaProximoSeguimiento: seguimiento.fechaProximoSeguimiento || datosSeguimiento.fechaProximoSeguimiento,
+          asunto: seguimiento.asunto || datosSeguimiento.asunto,
+          cuerpoMensaje: seguimiento.cuerpoMensaje || (datosSeguimiento.isLlamadoOficial ? datosSeguimiento.observacion : datosSeguimiento.cuerpoMensaje),
+          observacion: seguimiento.observacion || datosSeguimiento.observacion,
+          respuestaAprendiz: seguimiento.respuestaAprendiz || datosSeguimiento.respuestaAprendiz,
+          compromisos: seguimiento.compromisos || datosSeguimiento.compromisos,
+          proximaAccion: seguimiento.proximaAccion || datosSeguimiento.proximaAccion,
+          totalEvidencias: seguimiento.totalEvidencias ?? datosSeguimiento.totalEvidencias,
+          evidenciasEnviadas: seguimiento.evidenciasEnviadas ?? datosSeguimiento.evidenciasEnviadas,
+          evidenciasAprobadas: seguimiento.evidenciasAprobadas ?? datosSeguimiento.evidenciasAprobadas,
+          evidenciasDesaprobadas: seguimiento.evidenciasDesaprobadas ?? datosSeguimiento.evidenciasDesaprobadas,
+          origenRegistro: seguimiento.origenRegistro || datosSeguimiento.origenRegistro || 'Instructor',
+          creadoPorNombre: seguimiento.creadoPorNombre || seguimiento.instructor,
+          usuarioResponsableNombre: seguimiento.usuarioResponsableNombre || seguimiento.instructor,
+          numeroLlamado: seguimiento.numeroLlamado,
+          parentSeguimientoId: seguimiento.parentSeguimientoId ?? datosSeguimiento.parentSeguimientoId
         };
 
         store.aplicarIntervencionIndividual(
           targetLearner.documento,
-          result.seguimiento.estadoIntervencion,
+          seguimiento.estadoIntervencion,
           completeIntervencion
         );
       }

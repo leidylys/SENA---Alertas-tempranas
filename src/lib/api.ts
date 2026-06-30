@@ -256,5 +256,9 @@ export async function saveBitacoraSeguimiento(
     const errorData = await res.json().catch(() => null);
     throw new Error(errorData?.error || 'Error al registrar el seguimiento en la bitácora');
   }
-  return res.json();
+  const data = await res.json();
+  if (!data?.success) {
+    throw new Error(data?.error || 'Error al registrar el seguimiento en la bitácora');
+  }
+  return data;
 }

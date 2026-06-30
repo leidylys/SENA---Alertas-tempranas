@@ -2758,15 +2758,9 @@ async function startServer() {
       }
       const insId = insRecord.id;
 
-      // 2. Resolve Ficha numerical ID
+      // 2. Resolve Ficha numerical ID from PostgreSQL; memoryDb is only a dev cache.
       let resolvedFichaId: number | null = null;
       const fichaIdStr = String(fichaId).trim();
-
-      // Look up by codigoFicha in memoryDb
-      const memFicha = memoryDb.fichas.find(f => String(f.codigoFicha).trim() === fichaIdStr);
-      if (memFicha) {
-        resolvedFichaId = memFicha.id;
-      }
 
       // Look up by codigoFicha in Postgres
       try {
@@ -2796,9 +2790,11 @@ async function startServer() {
         }
       }
 
-      // Final fallback
       if (resolvedFichaId === null) {
-        resolvedFichaId = Number(fichaId) || 1;
+        return res.status(404).json({
+          success: false,
+          error: "No se encontró la ficha en PostgreSQL para registrar el llamado."
+        });
       }
 
       // 2b. Validate permission: Administrativo or instructor assigned to the Ficha
@@ -2890,7 +2886,7 @@ async function startServer() {
         return res.status(403).json(errorResponse);
       }
 
-      // 3. Find Learner in memoryDb & query Postgres
+      // 3. Find learner in PostgreSQL. memoryDb must not confirm durable persistence.
       let memStudent = memoryDb.aprendicesFichas.find(s => s.fichaId === resolvedFichaId && s.documento === userDoc);
       let pgStudent: any = null;
 
@@ -2920,52 +2916,46 @@ async function startServer() {
           }
         }
       } catch (dbErr: any) {
-        // Postgres query bypass
+        console.error('[LLAMADO_ENDPOINT] PostgreSQL learner lookup failed:', dbErr?.message || dbErr);
+        return res.status(500).json({
+          success: false,
+          error: "No fue posible guardar el seguimiento en PostgreSQL."
+        });
       }
 
-      // If apprentice not found in memoryDb nor Postgres, return 404 JSON
-      if (!memStudent && !pgStudent) {
+      if (!pgStudent) {
         const errorResponse = {
           success: false,
-          error: "No se encontró el aprendiz asociado a esta ficha."
+          error: "No se encontró el aprendiz asociado a esta ficha en PostgreSQL."
         };
         console.error('[LLAMADO_ENDPOINT] error_response', errorResponse);
         return res.status(404).json(errorResponse);
       }
 
-      // 4. Duplicate checks in last 60 seconds (both memory and Postgres)
-      const oneMinuteAgo = Date.now() - 60000;
-      let existingLogMem: any = null;
-      if (memStudent) {
-        existingLogMem = memoryDb.seguimientosHistorico.find(log => 
-          log.aprendizFichaId === memStudent.id &&
-          log.instructorId === insId &&
-          log.fecha.getTime() > oneMinuteAgo &&
-          (log.detalles.includes(asunto || '') || log.tipoSeguimiento === 'Correo de llamado a ponerse al día')
-        );
-      }
-
+      // 4. Duplicate checks in last 60 seconds, using PostgreSQL only.
       let duplicateLogPg: any = null;
-      if (pgStudent) {
-        try {
-          const oneMinuteAgoDate = new Date(Date.now() - 60000);
-          const potentialDuplicates = await db.select()
-            .from(seguimientosHistorico)
-            .where(and(
-              eq(seguimientosHistorico.aprendizFichaId, pgStudent.id),
-              eq(seguimientosHistorico.instructorId, insId),
-              gt(seguimientosHistorico.fecha, oneMinuteAgoDate)
-            ));
-          duplicateLogPg = potentialDuplicates.find(log => 
-            log.detalles.includes(asunto || '') || log.tipoSeguimiento === 'Correo de llamado a ponerse al día'
-          );
-        } catch (e) {}
+      try {
+        const oneMinuteAgoDate = new Date(Date.now() - 60000);
+        const potentialDuplicates = await db.select()
+          .from(seguimientosHistorico)
+          .where(and(
+            eq(seguimientosHistorico.aprendizFichaId, pgStudent.id),
+            eq(seguimientosHistorico.instructorId, insId),
+            gt(seguimientosHistorico.fecha, oneMinuteAgoDate)
+          ));
+        duplicateLogPg = potentialDuplicates.find(log => 
+          log.detalles.includes(asunto || '') || log.tipoSeguimiento === 'Correo de llamado a ponerse al día'
+        );
+      } catch (dbErr: any) {
+        console.error('[LLAMADO_ENDPOINT] PostgreSQL duplicate check failed:', dbErr?.message || dbErr);
+        return res.status(500).json({
+          success: false,
+          error: "No fue posible guardar el seguimiento en PostgreSQL."
+        });
       }
 
-      const isDuplicate = !!(existingLogMem || duplicateLogPg);
-
-      if (isDuplicate) {
-        const dupLog = duplicateLogPg || existingLogMem;
+      if (duplicateLogPg) {
+        const dupLog = duplicateLogPg;
         const numLlamado = dupLog.numeroLlamado || 1;
         const normalizedLlamado = {
           id: String(dupLog.id),
@@ -2993,26 +2983,18 @@ async function startServer() {
 
       // 5. Calculate next academic call number
       let nextCallNum = 1;
-      if (pgStudent) {
-        try {
-          const allLogsPg = await db.select()
-            .from(seguimientosHistorico)
-            .where(eq(seguimientosHistorico.aprendizFichaId, pgStudent.id));
-          const prevCallsPg = allLogsPg.filter(isAcademicCall);
-          nextCallNum = prevCallsPg.length + 1;
-        } catch (dbErr) {
-          if (memStudent) {
-            const prevCallsMem = memoryDb.seguimientosHistorico.filter(
-              log => log.aprendizFichaId === memStudent.id && isAcademicCall(log)
-            );
-            nextCallNum = prevCallsMem.length + 1;
-          }
-        }
-      } else if (memStudent) {
-        const prevCallsMem = memoryDb.seguimientosHistorico.filter(
-          log => log.aprendizFichaId === memStudent.id && isAcademicCall(log)
-        );
-        nextCallNum = prevCallsMem.length + 1;
+      try {
+        const allLogsPg = await db.select()
+          .from(seguimientosHistorico)
+          .where(eq(seguimientosHistorico.aprendizFichaId, pgStudent.id));
+        const prevCallsPg = allLogsPg.filter(isAcademicCall);
+        nextCallNum = prevCallsPg.length + 1;
+      } catch (dbErr: any) {
+        console.error('[LLAMADO_ENDPOINT] PostgreSQL call numbering failed:', dbErr?.message || dbErr);
+        return res.status(500).json({
+          success: false,
+          error: "No fue posible guardar el seguimiento en PostgreSQL."
+        });
       }
 
       // 6. Build the detailed observation message
@@ -3037,75 +3019,98 @@ ${mensaje}`;
 
       let createdLogId: number | null = null;
 
-      // 7. Execute PostgreSQL actions inside isolated try/catch to ensure database failure resilience
-      if (pgStudent) {
-        try {
-          // Update student status
-          await db.update(aprendicesFichas)
-            .set({ estadoIntervencion: 'En seguimiento' })
-            .where(eq(aprendicesFichas.id, pgStudent.id));
+      // 7. PostgreSQL is the source of truth for successful bitacora persistence.
+      try {
+        await db.update(aprendicesFichas)
+          .set({ estadoIntervencion: 'En seguimiento' })
+          .where(eq(aprendicesFichas.id, pgStudent.id));
 
-          // Insert followup log
-          const insertResult = await db.insert(seguimientosHistorico)
-            .values({
-              aprendizFichaId: pgStudent.id,
-              instructorId: insId,
-              estadoPrevio: pgStudent.estadoIntervencion || 'Sin novedad',
-              estadoNuevo: 'En seguimiento',
-              detalles: detailsText,
-              tipoSeguimiento: 'Correo de llamado a ponerse al día',
-              evidenciasPendientes: Number(evidenciasPendientes || 0),
-              diasSinAcceso: Number(diasSinAcceso || 0),
-              numeroLlamado: nextCallNum
-            })
-            .returning({ id: seguimientosHistorico.id });
+        const insertResult = await db.insert(seguimientosHistorico)
+          .values({
+            aprendizFichaId: pgStudent.id,
+            instructorId: insId,
+            estadoPrevio: pgStudent.estadoIntervencion || 'Sin novedad',
+            estadoNuevo: 'En seguimiento',
+            detalles: detailsText,
+            tipoSeguimiento: 'Correo de llamado a ponerse al día',
+            evidenciasPendientes: Number(evidenciasPendientes || 0),
+            diasSinAcceso: Number(diasSinAcceso || 0),
+            numeroLlamado: nextCallNum,
+            codigoFicha: fichaIdStr,
+            usuarioResponsableNombre: insRecord.nombre,
+            usuarioResponsableRol: insRecord.rol,
+            medioComunicacion: 'Correo electrónico',
+            fechaRegistro: new Date(),
+            fechaEnvioMensaje: new Date().toISOString().split('T')[0],
+            asunto: asunto || 'Llamado académico',
+            cuerpoMensaje: mensaje || null,
+            observacion: obs,
+            fechaUltimoIngreso: ultimoAcceso || pgStudent.ultimoAcceso || null,
+            totalEvidencias: Number(totalEv || 0),
+            evidenciasEnviadas: Number(evEnviadas || 0),
+            evidenciasAprobadas: Number(evAprobadas || 0),
+            evidenciasDesaprobadas: Number(evDesaprobadas || 0),
+            creadoPorId: insId,
+            creadoPorNombre: insRecord.nombre,
+            creadoPorRol: insRecord.rol,
+            editablePorRol: insRecord.rol,
+            origenRegistro: 'Instructor'
+          })
+          .returning({ id: seguimientosHistorico.id });
 
-          if (insertResult.length > 0) {
-            createdLogId = insertResult[0].id;
-          }
-
-          // Escalation check in Postgres
-          if (nextCallNum > 3) {
-            const existingPgAlerts = await db.select().from(alertasCriticas).where(eq(alertasCriticas.aprendizFichaId, pgStudent.id));
-            const openAlert = existingPgAlerts.find(a => a.estado !== 'Cerrado' && a.estado !== 'Cerrado por mejora');
-
-            const summaryText = `[Llamado #${nextCallNum} - ${new Date().toLocaleDateString()}] Evidencias: ${evidenciasPendientes}, Días sin acceso: ${diasSinAcceso}.`;
-
-            if (openAlert) {
-              await db.update(alertasCriticas)
-                .set({
-                  totalLlamados: nextCallNum,
-                  evidenciasPendientes: Number(evidenciasPendientes || 0),
-                  diasSinAcceso: Number(diasSinAcceso || 0),
-                  ultimoAcceso: ultimoAcceso || pgStudent.ultimoAcceso,
-                  historialResumido: openAlert.historialResumido + '\n' + summaryText,
-                  estado: 'Requiere intervención administrativa'
-                })
-                .where(eq(alertasCriticas.id, openAlert.id));
-            } else {
-              await db.insert(alertasCriticas)
-                .values({
-                  aprendizFichaId: pgStudent.id,
-                  instructorId: insId,
-                  totalLlamados: nextCallNum,
-                  evidenciasPendientes: Number(evidenciasPendientes || 0),
-                  diasSinAcceso: Number(diasSinAcceso || 0),
-                  ultimoAcceso: ultimoAcceso || pgStudent.ultimoAcceso,
-                  historialResumido: summaryText,
-                  nivelRiesgo: pgStudent.nivelRiesgo || 'Alto',
-                  estado: 'Requiere intervención administrativa'
-                });
-            }
-          }
-        } catch (dbErr: any) {
-          console.error("[ERROR] Postgres operations failed inside /api/aprendices/enviar-llamado", {
-            message: dbErr?.message,
-            stack: process.env.NODE_ENV === "development" ? dbErr?.stack : undefined
+        if (insertResult.length === 0) {
+          return res.status(500).json({
+            success: false,
+            error: "No fue posible guardar el seguimiento en PostgreSQL."
           });
         }
+        createdLogId = insertResult[0].id;
+
+        // Escalation check in Postgres
+        if (nextCallNum > 3) {
+          const existingPgAlerts = await db.select().from(alertasCriticas).where(eq(alertasCriticas.aprendizFichaId, pgStudent.id));
+          const openAlert = existingPgAlerts.find(a => a.estado !== 'Cerrado' && a.estado !== 'Cerrado por mejora');
+
+          const summaryText = `[Llamado #${nextCallNum} - ${new Date().toLocaleDateString()}] Evidencias: ${evidenciasPendientes}, Días sin acceso: ${diasSinAcceso}.`;
+
+          if (openAlert) {
+            await db.update(alertasCriticas)
+              .set({
+                totalLlamados: nextCallNum,
+                evidenciasPendientes: Number(evidenciasPendientes || 0),
+                diasSinAcceso: Number(diasSinAcceso || 0),
+                ultimoAcceso: ultimoAcceso || pgStudent.ultimoAcceso,
+                historialResumido: openAlert.historialResumido + '\n' + summaryText,
+                estado: 'Requiere intervención administrativa'
+              })
+              .where(eq(alertasCriticas.id, openAlert.id));
+          } else {
+            await db.insert(alertasCriticas)
+              .values({
+                aprendizFichaId: pgStudent.id,
+                instructorId: insId,
+                totalLlamados: nextCallNum,
+                evidenciasPendientes: Number(evidenciasPendientes || 0),
+                diasSinAcceso: Number(diasSinAcceso || 0),
+                ultimoAcceso: ultimoAcceso || pgStudent.ultimoAcceso,
+                historialResumido: summaryText,
+                nivelRiesgo: pgStudent.nivelRiesgo || 'Alto',
+                estado: 'Requiere intervención administrativa'
+              });
+          }
+        }
+      } catch (dbErr: any) {
+        console.error("[ERROR] Postgres operations failed inside /api/aprendices/enviar-llamado", {
+          message: dbErr?.message,
+          stack: process.env.NODE_ENV === "development" ? dbErr?.stack : undefined
+        });
+        return res.status(500).json({
+          success: false,
+          error: "No fue posible guardar el seguimiento en PostgreSQL."
+        });
       }
 
-      // 8. Execute Memory DB actions
+      // 8. Keep memoryDb synchronized only after PostgreSQL succeeds.
       if (memStudent) {
         memStudent.estadoIntervencion = 'En seguimiento';
 
@@ -3124,10 +3129,6 @@ ${mensaje}`;
           diasSinAcceso: Number(diasSinAcceso || 0),
           numeroLlamado: nextCallNum
         });
-
-        if (!createdLogId) {
-          createdLogId = memoryLogId;
-        }
 
         // Escalation check in memoryDb
         if (nextCallNum > 3) {
@@ -3165,7 +3166,7 @@ ${mensaje}`;
 
       // 9. Return the normalized JSON success response
       const returnedLog = {
-        id: String(createdLogId || `int-${Date.now()}`),
+        id: String(createdLogId),
         fecha: new Date().toISOString().split('T')[0],
         instructor: insRecord?.nombre || 'Instructor',
         tipoSeguimiento: 'Correo de llamado a ponerse al día',
@@ -3264,32 +3265,33 @@ ${mensaje}`;
         parentSeguimientoId
       } = req.body;
 
-      // Find the student in Postgres
+      // Find the student in PostgreSQL. memoryDb is not valid persistence.
       let pgStudent: any = null;
       try {
         const studentResult = await db.select().from(aprendicesFichas).where(eq(aprendicesFichas.id, aprendizFichaId));
         if (studentResult.length > 0) {
           pgStudent = studentResult[0];
         }
-      } catch (dbErr) {}
+      } catch (dbErr: any) {
+        console.error('[BITACORA_ENDPOINT] PostgreSQL learner lookup failed:', dbErr?.message || dbErr);
+        return res.status(500).json({ success: false, error: 'No fue posible guardar el seguimiento en PostgreSQL.' });
+      }
 
       // Find the student in MemoryDb
       let memStudent = memoryDb.aprendicesFichas.find(s => s.id === aprendizFichaId);
 
-      if (!pgStudent && !memStudent) {
-        return res.status(404).json({ success: false, error: 'No se encontró el aprendiz.' });
+      if (!pgStudent) {
+        return res.status(404).json({ success: false, error: 'No se encontró el aprendiz en PostgreSQL.' });
       }
 
       // Resolve Ficha code
       let resolvedCodigoFicha = '';
-      if (pgStudent) {
-        try {
-          const fList = await db.select().from(fichas).where(eq(fichas.id, pgStudent.fichaId));
-          if (fList.length > 0) resolvedCodigoFicha = fList[0].codigoFicha;
-        } catch (e) {}
-      } else if (memStudent) {
-        const f = memoryDb.fichas.find(f => f.id === memStudent.fichaId);
-        if (f) resolvedCodigoFicha = f.codigoFicha;
+      try {
+        const fList = await db.select().from(fichas).where(eq(fichas.id, pgStudent.fichaId));
+        if (fList.length > 0) resolvedCodigoFicha = fList[0].codigoFicha;
+      } catch (dbErr: any) {
+        console.error('[BITACORA_ENDPOINT] PostgreSQL ficha lookup failed:', dbErr?.message || dbErr);
+        return res.status(500).json({ success: false, error: 'No fue posible guardar el seguimiento en PostgreSQL.' });
       }
 
       // Format details text
@@ -3323,67 +3325,65 @@ ${mensaje}`;
 
       let createdLogId: number | null = null;
 
-      // 1. Persist to Postgres
-      if (pgStudent) {
-        try {
-          // If state changed, update apprentice record
-          if (nextIntervention !== prevIntervention) {
-            await db.update(aprendicesFichas)
-              .set({ estadoIntervencion: nextIntervention })
-              .where(eq(aprendicesFichas.id, pgStudent.id));
-          }
-
-          const insertResult = await db.insert(seguimientosHistorico)
-            .values({
-              aprendizFichaId: pgStudent.id,
-              instructorId: insId,
-              estadoPrevio: prevIntervention,
-              estadoNuevo: nextIntervention,
-              detalles: detailsText,
-              tipoSeguimiento: tipoSeguimiento || 'Comunicación de seguimiento',
-              evidenciasPendientes: Number(evidenciasPendientes || pgStudent.evidenciasPendientes || 0),
-              diasSinAcceso: Number(diasSinAcceso || pgStudent.diasSinAcceso || 0),
-              
-              codigoFicha: resolvedCodigoFicha,
-              usuarioResponsableNombre: insRecord.nombre,
-              usuarioResponsableRol: insRecord.rol,
-              medioComunicacion: medioComunicacion || 'Otro',
-              fechaRegistro: new Date(),
-              fechaEnvioMensaje: fechaEnvioMensaje || new Date().toISOString().split('T')[0],
-              fechaRespuestaAprendiz: fechaRespuestaAprendiz || null,
-              fechaProximoSeguimiento: fechaProximoSeguimiento || null,
-              asunto: asunto || tipoSeguimiento || 'Seguimiento',
-              cuerpoMensaje: cuerpoMensaje || null,
-              observacion: observacion || null,
-              respuestaAprendiz: respuestaAprendiz || null,
-              acuerdosEstablecidos: acuerdosEstablecidos || null,
-              compromisos: compromisos || null,
-              proximaAccion: proximaAccion || null,
-              fechaUltimoIngreso: fechaUltimoIngreso || pgStudent.ultimoAcceso || null,
-              totalEvidencias: Number(totalEvidencias || 0),
-              evidenciasEnviadas: Number(evidenciasEnviadas || 0),
-              evidenciasAprobadas: Number(evidenciasAprobadas || 0),
-              evidenciasDesaprobadas: Number(evidenciasDesaprobadas || 0),
-              detalleEvidenciasPendientes: detalleEvidenciasPendientes || null,
-              creadoPorId: insId,
-              creadoPorNombre: creadoPorNombre || insRecord.nombre,
-              creadoPorRol: creadoPorRol || insRecord.rol,
-              editablePorRol: insRecord.rol,
-              origenRegistro: origenRegistro || 'Instructor',
-              parentSeguimientoId: parentSeguimientoId ? Number(parentSeguimientoId) : null
-            })
-            .returning({ id: seguimientosHistorico.id });
-
-          if (insertResult.length > 0) {
-            createdLogId = insertResult[0].id;
-          }
-        } catch (dbErr: any) {
-          console.error('[BITACORA_ENDPOINT] Postgres insert failed:', dbErr.message);
-          return res.status(500).json({ success: false, error: 'No fue posible registrar el seguimiento en Postgres.' });
+      // 1. Persist to PostgreSQL. This is the only path that may return success true.
+      try {
+        if (nextIntervention !== prevIntervention) {
+          await db.update(aprendicesFichas)
+            .set({ estadoIntervencion: nextIntervention })
+            .where(eq(aprendicesFichas.id, pgStudent.id));
         }
+
+        const insertResult = await db.insert(seguimientosHistorico)
+          .values({
+            aprendizFichaId: pgStudent.id,
+            instructorId: insId,
+            estadoPrevio: prevIntervention,
+            estadoNuevo: nextIntervention,
+            detalles: detailsText,
+            tipoSeguimiento: tipoSeguimiento || 'Comunicación de seguimiento',
+            evidenciasPendientes: Number(evidenciasPendientes || pgStudent.evidenciasPendientes || 0),
+            diasSinAcceso: Number(diasSinAcceso || pgStudent.diasSinAcceso || 0),
+            
+            codigoFicha: resolvedCodigoFicha,
+            usuarioResponsableNombre: insRecord.nombre,
+            usuarioResponsableRol: insRecord.rol,
+            medioComunicacion: medioComunicacion || 'Otro',
+            fechaRegistro: new Date(),
+            fechaEnvioMensaje: fechaEnvioMensaje || new Date().toISOString().split('T')[0],
+            fechaRespuestaAprendiz: fechaRespuestaAprendiz || null,
+            fechaProximoSeguimiento: fechaProximoSeguimiento || null,
+            asunto: asunto || tipoSeguimiento || 'Seguimiento',
+            cuerpoMensaje: cuerpoMensaje || null,
+            observacion: observacion || null,
+            respuestaAprendiz: respuestaAprendiz || null,
+            acuerdosEstablecidos: acuerdosEstablecidos || null,
+            compromisos: compromisos || null,
+            proximaAccion: proximaAccion || null,
+            fechaUltimoIngreso: fechaUltimoIngreso || pgStudent.ultimoAcceso || null,
+            totalEvidencias: Number(totalEvidencias || 0),
+            evidenciasEnviadas: Number(evidenciasEnviadas || 0),
+            evidenciasAprobadas: Number(evidenciasAprobadas || 0),
+            evidenciasDesaprobadas: Number(evidenciasDesaprobadas || 0),
+            detalleEvidenciasPendientes: detalleEvidenciasPendientes || null,
+            creadoPorId: insId,
+            creadoPorNombre: creadoPorNombre || insRecord.nombre,
+            creadoPorRol: creadoPorRol || insRecord.rol,
+            editablePorRol: insRecord.rol,
+            origenRegistro: origenRegistro || 'Instructor',
+            parentSeguimientoId: parentSeguimientoId ? Number(parentSeguimientoId) : null
+          })
+          .returning({ id: seguimientosHistorico.id });
+
+        if (insertResult.length === 0) {
+          return res.status(500).json({ success: false, error: 'No fue posible guardar el seguimiento en PostgreSQL.' });
+        }
+        createdLogId = insertResult[0].id;
+      } catch (dbErr: any) {
+        console.error('[BITACORA_ENDPOINT] Postgres insert failed:', dbErr.message);
+        return res.status(500).json({ success: false, error: 'No fue posible guardar el seguimiento en PostgreSQL.' });
       }
 
-      // 2. Persist to memory fallback
+      // 2. Keep memoryDb synchronized only after PostgreSQL succeeds.
       if (memStudent) {
         if (nextIntervention !== prevIntervention) {
           memStudent.estadoIntervencion = nextIntervention;
@@ -3431,9 +3431,6 @@ ${mensaje}`;
           parentSeguimientoId: parentSeguimientoId ? Number(parentSeguimientoId) : null
         });
 
-        if (!createdLogId) {
-          createdLogId = memLogId;
-        }
       }
 
       // Success response JSON
@@ -3446,9 +3443,29 @@ ${mensaje}`;
           instructor: insRecord.nombre,
           tipoSeguimiento: tipoSeguimiento || 'Comunicación de seguimiento',
           estadoIntervencion: nextIntervention,
+          detalle: detailsText,
           observaciones: observacion || detailsText,
           medioComunicacion: medioComunicacion || 'Otro',
           fecha: new Date().toISOString().split('T')[0],
+          evidenciasPendientes: Number(evidenciasPendientes || pgStudent.evidenciasPendientes || 0),
+          diasSinAcceso: Number(diasSinAcceso || pgStudent.diasSinAcceso || 0),
+          asunto: asunto || tipoSeguimiento || 'Seguimiento',
+          cuerpoMensaje: cuerpoMensaje || null,
+          observacion: observacion || null,
+          respuestaAprendiz: respuestaAprendiz || null,
+          compromisos: compromisos || null,
+          proximaAccion: proximaAccion || null,
+          fechaRegistro: new Date().toISOString(),
+          fechaEnvioMensaje: fechaEnvioMensaje || new Date().toISOString().split('T')[0],
+          fechaRespuestaAprendiz: fechaRespuestaAprendiz || null,
+          fechaProximoSeguimiento: fechaProximoSeguimiento || null,
+          totalEvidencias: Number(totalEvidencias || 0),
+          evidenciasEnviadas: Number(evidenciasEnviadas || 0),
+          evidenciasAprobadas: Number(evidenciasAprobadas || 0),
+          evidenciasDesaprobadas: Number(evidenciasDesaprobadas || 0),
+          origenRegistro: origenRegistro || 'Instructor',
+          creadoPorNombre: creadoPorNombre || insRecord.nombre,
+          usuarioResponsableNombre: insRecord.nombre,
           parentSeguimientoId: parentSeguimientoId ? Number(parentSeguimientoId) : null
         }
       });
