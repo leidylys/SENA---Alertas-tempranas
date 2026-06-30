@@ -3,7 +3,7 @@ import {
   Home, RefreshCw, Download, FileText, AlertTriangle, LogOut,
   Building, User, Calendar, Sparkles, FolderSync, Info,
   Upload, Loader2, CheckCircle2, AlertCircle, CalendarClock, Trash2,
-  FileSpreadsheet, ArrowLeft, ShieldCheck, X, Check, Mail, Send
+  FileSpreadsheet, ArrowLeft, ShieldCheck, X, Check, Mail, Send, Copy, ExternalLink
 } from 'lucide-react';
 import { Aprendiz, Fase, FichaInfo } from '../types';
 import DashboardCards from '../components/DashboardCards';
@@ -24,6 +24,33 @@ interface DashboardPageProps {
   onReiniciar: () => void;
   authToken: string;
   isAdmin?: boolean;
+}
+
+function isAcademicCall(hist: { tipoSeguimiento?: string | null; numeroLlamado?: number | null }): boolean {
+  if (!hist) return false;
+  const isTypeMail = hist.tipoSeguimiento === 'Correo de llamado a ponerse al día';
+  const hasLlamadoInType = typeof hist.tipoSeguimiento === 'string' && hist.tipoSeguimiento.toLowerCase().includes('llamado');
+  const hasValidNum = typeof hist.numeroLlamado === 'number' && hist.numeroLlamado > 0;
+  return isTypeMail || hasLlamadoInType || hasValidNum;
+}
+
+function getOrdinalLlamadoText(num: number): string {
+  const ordinals = [
+    'Primer llamado',
+    'Segundo llamado',
+    'Tercer llamado',
+    'Cuarto llamado',
+    'Quinto llamado',
+    'Sexto llamado',
+    'Séptimo llamado',
+    'Octavo llamado',
+    'Noveno llamado',
+    'Décimo llamado'
+  ];
+  if (num >= 1 && num <= 10) {
+    return ordinals[num - 1];
+  }
+  return `Llamado #${num}`;
 }
 
 export default function DashboardPage({
@@ -49,6 +76,7 @@ export default function DashboardPage({
   const [emailCuerpo, setEmailCuerpo] = useState('');
   const [isSendingLlamado, setIsSendingLlamado] = useState(false);
   const [llamadoSuccessMessage, setLlamadoSuccessMessage] = useState('');
+  const [copied, setCopied] = useState(false);
   
   // Strategy targets (either singular learner or mass block)
   const [strategySingleTarget, setStrategySingleTarget] = useState<Aprendiz | null>(null);
@@ -90,59 +118,166 @@ export default function DashboardPage({
   const triggerEnviarLlamadoModal = (ap: Aprendiz) => {
     setSelectedAprendizLlamado(ap);
     setEmailDestinatario(ap.correo || '');
+
+    const getACountLocal = (learner: Aprendiz) => {
+      if (!learner || !learner.evidencias) return 0;
+      return Object.values(learner.evidencias).filter(v => {
+        const valStr = v && typeof v === 'object' ? (v as any).estado : String(v);
+        return valStr === 'A';
+      }).length;
+    };
+
+    const getDCountLocal = (learner: Aprendiz) => {
+      if (!learner || !learner.evidencias) return 0;
+      return Object.values(learner.evidencias).filter(v => {
+        const valStr = v && typeof v === 'object' ? (v as any).estado : String(v);
+        return valStr === 'D';
+      }).length;
+    };
+
+    const getTotalCountLocal = (learner: Aprendiz) => {
+      if (!learner || !learner.evidencias) return 0;
+      return Object.keys(learner.evidencias).length;
+    };
+
+    const totalEvidencias = getTotalCountLocal(ap);
+    const totalAprobadas = getACountLocal(ap);
+    const totalNoAprobadas = getDCountLocal(ap);
+    const totalEnviadas = totalAprobadas + totalNoAprobadas;
+    const totalPendientes = totalEvidencias - totalAprobadas;
     
-    // Calculate pending evidence list
+    // Calculate pending evidence list organized by phase and activity
     const evs = ap.evidencias || {};
-    const pendingList: string[] = [];
+    const groupedPending: Record<string, Record<string, string[]>> = {};
+
     Object.entries(evs).forEach(([key, value]) => {
       let valStr = '';
+      let detail: any = null;
       if (typeof value === 'object' && value !== null) {
         valStr = (value as any).estado;
+        detail = value;
       } else {
         valStr = String(value);
       }
+
       if (valStr === 'D' || valStr === '-' || valStr === '' || !valStr) {
-        pendingList.push(key);
+        let faseName = 'Fase de Formación';
+        let actProyecto = 'Sin Actividad';
+
+        if (detail) {
+          if (detail.fase) faseName = detail.fase;
+          if (detail.actividadProyecto) actProyecto = detail.actividadProyecto;
+        } else {
+          // Find in fases prop
+          const phasesList = fases || [];
+          for (const f of phasesList) {
+            if (f.evidencias.some(e => e.nombre === key)) {
+              faseName = f.nombre;
+              break;
+            }
+          }
+          
+          // Deduce activity
+          const codeMatch = key.match(/(GA\d+-[A-Za-z0-9_-]+)/i);
+          if (codeMatch) {
+            const code = codeMatch[1].toUpperCase();
+            const actMatch = code.match(/^(GA\d+)/i);
+            if (actMatch) {
+              actProyecto = actMatch[1].toUpperCase();
+            }
+          } else {
+            const gaMatch = key.match(/(GA\d+)/i);
+            if (gaMatch) {
+              actProyecto = gaMatch[1].toUpperCase();
+            }
+          }
+        }
+
+        // Standardize Activity label (e.g. GA1 -> AP1)
+        if (/GA(\d+)/i.test(actProyecto)) {
+          actProyecto = actProyecto.replace(/GA(\d+)/gi, 'AP$1');
+        }
+
+        if (!groupedPending[faseName]) {
+          groupedPending[faseName] = {};
+        }
+        if (!groupedPending[faseName][actProyecto]) {
+          groupedPending[faseName][actProyecto] = [];
+        }
+        groupedPending[faseName][actProyecto].push(key);
       }
     });
 
-    const totalPendientes = pendingList.length;
-    const listaEvidenciasStr = totalPendientes > 0 
-      ? pendingList.map(ev => `  • ${ev} (No presentada o D)`).join('\n')
-      : '  • Ninguna evidencia calificada con D.';
+    let listaEvidenciasStr = '';
+    if (totalPendientes > 0) {
+      const parts: string[] = [];
+      Object.entries(groupedPending).forEach(([fase, actividades]) => {
+        parts.push(`${fase}`);
+        Object.entries(actividades).forEach(([act, evsList]) => {
+          let actLabel = act;
+          if (/^AP(\d+)/i.test(act)) {
+            const num = act.match(/^AP(\d+)/i)?.[1];
+            actLabel = `Actividad de Proyecto ${num}`;
+          } else if (/^GA(\d+)/i.test(act)) {
+            const num = act.match(/^GA(\d+)/i)?.[1];
+            actLabel = `Actividad de Proyecto ${num}`;
+          }
+          parts.push(`${actLabel}`);
+          evsList.forEach(evName => {
+            parts.push(`* ${evName}`);
+          });
+          parts.push(''); // spacing line
+        });
+      });
+      listaEvidenciasStr = parts.join('\n').trim();
+    } else {
+      listaEvidenciasStr = 'No registra evidencias pendientes.';
+    }
 
-    const asunto = `Llamado de atención académico y de inasistencia - Ficha ${fichaInfo.numeroFicha}`;
+    let fraseTonoInteraccion = '';
+    const isCritical = ap.estadoSeguimiento === 'Posible deserción' || ap.estadoAcceso === 'Acceso crítico';
+
+    if (isCritical) {
+      fraseTonoInteraccion = 'Dada la cantidad de días sin acceso y las evidencias pendientes registradas, es importante establecer contacto a la mayor brevedad para revisar tu continuidad y definir acciones de acompañamiento.';
+    } else if (totalEnviadas > 0) {
+      fraseTonoInteraccion = 'Se evidencia que has realizado algunas entregas; sin embargo, aún registras evidencias pendientes que requieren atención.';
+    } else if (totalEnviadas === 0 && totalPendientes > 0) {
+      fraseTonoInteraccion = 'En el reporte cargado no se evidencian entregas registradas, por lo cual es importante validar tu situación académica y de acceso.';
+    }
+
+    const isAsuntoCritico = ap.estadoSeguimiento === 'Posible deserción' || ap.estadoAcceso === 'Acceso crítico' || ap.estadoSeguimiento === 'Riesgo alto';
+    const asunto = isAsuntoCritico
+      ? `Llamado académico por inasistencia y evidencias pendientes – Ficha ${fichaInfo.numeroFicha}`
+      : `Seguimiento académico y acceso a plataforma – Ficha ${fichaInfo.numeroFicha}`;
     
-    const cuerpo = `Estimado(a) ${ap.nombre},
+    const cuerpo = `Apreciado/a ${ap.nombre},
 
-Espero que se encuentre muy bien.
+Desde el seguimiento académico realizado a la ficha ${fichaInfo.numeroFicha}, se identifican novedades relacionadas con tu acceso a la plataforma y el estado de tus evidencias.
 
-A través de la presente comunicación formal, nos dirigimos a usted en calidad de Instructor responsable para informarle sobre el estado de su proceso formativo en el programa de formación "${fichaInfo.programaFormacion}" correspondiente a la ficha de caracterización ${fichaInfo.numeroFicha}.
+${ap.ultimoAcceso ? `Se evidencia que desde la fecha ${ap.ultimoAcceso} presentas ${ap.diasSinAcceso || 0} días sin ingresar a la plataforma.` : `No se registra ingreso reciente a la plataforma en el reporte cargado, por lo cual se requiere validar tu situación académica y de acceso.`}
 
-Como parte del proceso de seguimiento pedagógico continuo de la plataforma SENA, hemos detectado que actualmente presenta situaciones académicas especiales que ponen en riesgo su continuidad y permanencia en la formación:
+${fraseTonoInteraccion}
 
-1. Evidencias Pendientes (D / No Presentadas):
-Presenta un total de ${totalPendientes} evidencias pendientes de entrega o con calificación no aprobatoria (D), detalladas a continuación:
+Resumen académico:
+* Total de evidencias: ${totalEvidencias}
+* Evidencias enviadas: ${totalEnviadas} (Aprobadas: ${totalAprobadas} · Desaprobadas: ${totalNoAprobadas})
+* Evidencias aprobadas: ${totalAprobadas}
+* Evidencias desaprobadas: ${totalNoAprobadas}
+* Evidencias pendientes: ${totalPendientes}
+
+Las evidencias enviadas corresponden a las evidencias aprobadas y desaprobadas, ya que ambas reflejan interacción académica con la plataforma.
+
+Evidencias pendientes identificadas:
 ${listaEvidenciasStr}
 
-2. Inasistencia y Acceso a la Plataforma LMS:
-Registra un total de ${ap.diasSinAcceso || 0} días consecutivos sin ingresar a la plataforma virtual de aprendizaje. Su último ingreso registrado fue el ${ap.ultimoAcceso || 'No registra accesos recientes'}.
+Te invitamos cordialmente a ingresar a la plataforma LMS a la mayor brevedad posible para revisar detalladamente las evidencias pendientes mencionadas y ponerte al día con tus entregas. Si presentas inquietudes o requieres orientación pedagógica, responde a este correo o comunícate directamente con tu instructor responsable.
 
-Consideraciones Pedagógicas:
-El SENA se caracteriza por brindar una formación profesional integral de alta calidad, que requiere constancia, disciplina y compromiso constante. Le instamos cordialmente a retomar su ritmo de estudio y ponerse al día con sus compromisos formativos pendientes a la mayor brevedad. 
-
-Recuerde que el equipo de instructores está a su entera disposición para brindarle el apoyo académico necesario, aclarar sus dudas o concertar tutorías personalizadas que faciliten su aprendizaje y superación de dificultades.
-
-Por favor, responda a este correo o póngase en contacto directo con su instructor responsable para coordinar un plan de mejora académica y evitar que su caso sea escalado formalmente ante el Comité de Evaluación y Seguimiento de la Ficha.
-
-¡Confiamos plenamente en su potencial y capacidad para culminar este proceso formativo con éxito!
+Este seguimiento tiene como propósito acompañar tu proceso formativo y promover tu permanencia en la formación.
 
 Atentamente,
-
-${fichaInfo.instructor || 'Instructor Responsable'}
-Instructor Responsable
-Servicio Nacional de Aprendizaje (SENA)
-`;
+${fichaInfo.instructor || 'Instructor responsable'}
+Instructor de Formación
+Servicio Nacional de Aprendizaje (SENA)`;
 
     setEmailAsunto(asunto);
     setEmailCuerpo(cuerpo);
@@ -154,16 +289,34 @@ Servicio Nacional de Aprendizaje (SENA)
     e.preventDefault();
     if (!selectedAprendizLlamado) return;
     setIsSendingLlamado(true);
-    
-    // Count pending evidences
-    const evs = selectedAprendizLlamado.evidencias || {};
-    let pendingCount = 0;
-    Object.entries(evs).forEach(([_, value]) => {
-      const valStr = typeof value === 'object' && value !== null ? (value as any).estado : String(value);
-      if (valStr === 'D' || valStr === '-' || valStr === '' || !valStr) {
-        pendingCount++;
-      }
-    });
+
+    const getACountLocal = (learner: Aprendiz) => {
+      if (!learner || !learner.evidencias) return 0;
+      return Object.values(learner.evidencias).filter(v => {
+        const valStr = v && typeof v === 'object' ? (v as any).estado : String(v);
+        return valStr === 'A';
+      }).length;
+    };
+
+    const getDCountLocal = (learner: Aprendiz) => {
+      if (!learner || !learner.evidencias) return 0;
+      return Object.values(learner.evidencias).filter(v => {
+        const valStr = v && typeof v === 'object' ? (v as any).estado : String(v);
+        return valStr === 'D';
+      }).length;
+    };
+
+    const getTotalCountLocal = (learner: Aprendiz) => {
+      if (!learner || !learner.evidencias) return 0;
+      return Object.keys(learner.evidencias).length;
+    };
+
+    const totalEv = getTotalCountLocal(selectedAprendizLlamado);
+    const evAprobadas = getACountLocal(selectedAprendizLlamado);
+    const evDesaprobadas = getDCountLocal(selectedAprendizLlamado);
+    const evEnviadas = evAprobadas + evDesaprobadas;
+    const pendingCount = totalEv - evAprobadas;
+    const nextCallNum = (selectedAprendizLlamado.historialIntervenciones || []).filter(isAcademicCall).length + 1;
 
     try {
       const response = await fetch('/api/aprendices/enviar-llamado', {
@@ -180,12 +333,35 @@ Servicio Nacional de Aprendizaje (SENA)
           mensaje: emailCuerpo,
           evidenciasPendientes: pendingCount,
           diasSinAcceso: selectedAprendizLlamado.diasSinAcceso || 0,
-          ultimoAcceso: selectedAprendizLlamado.ultimoAcceso
+          ultimoAcceso: selectedAprendizLlamado.ultimoAcceso,
+          
+          totalEvidencias: totalEv,
+          evidenciasEnviadas: evEnviadas,
+          evidenciasAprobadas: evAprobadas,
+          evidenciasDesaprobadas: evDesaprobadas,
+          observacion: `Registro de ${getOrdinalLlamadoText(nextCallNum)}.`
         })
       });
 
       const result = await response.json();
       if (response.ok && result.success) {
+        const actualCallNum = result.numeroLlamado || nextCallNum;
+        const ordinalLabel = getOrdinalLlamadoText(actualCallNum);
+        const obs = `Registro de ${ordinalLabel}.`;
+
+        const detailsText = `Asunto: ${emailAsunto}
+Ficha: ${fichaInfo.numeroFicha}
+Fecha de último ingreso: ${selectedAprendizLlamado.ultimoAcceso || 'Nunca ingresó'}
+Días sin acceso: ${selectedAprendizLlamado.diasSinAcceso || 0}
+Total evidencias: ${totalEv}
+Evidencias enviadas: ${evEnviadas}
+Evidencias aprobadas: ${evAprobadas}
+Evidencias desaprobadas: ${evDesaprobadas}
+Evidencias pendientes: ${pendingCount}
+Observación: ${obs}
+--------------------------------------------------
+${emailCuerpo}`;
+
         // Update local state in the store so the list is reactive and doesn't require a hard page reload!
         store.aplicarIntervencionIndividual(
           selectedAprendizLlamado.documento,
@@ -197,19 +373,19 @@ Servicio Nacional de Aprendizaje (SENA)
             tipoSeguimiento: 'Correo de llamado a ponerse al día',
             evidenciasPendientes: pendingCount,
             diasSinAcceso: selectedAprendizLlamado.diasSinAcceso || 0,
-            numeroLlamado: result.numeroLlamado || 1,
-            detalle: emailCuerpo,
-            observaciones: `Llamado de atención #${result.numeroLlamado || 1} enviado por correo.`
+            numeroLlamado: actualCallNum,
+            detalle: detailsText,
+            observaciones: `Registro de ${ordinalLabel}.`
           }
         );
 
-        setLlamadoSuccessMessage(`¡Llamado #${result.numeroLlamado} enviado con éxito! El estado del aprendiz se actualizó a "En seguimiento".`);
+        setLlamadoSuccessMessage(`¡${ordinalLabel} registrado con éxito! El estado del aprendiz se actualizó a "En seguimiento".`);
         setTimeout(() => {
           setIsLlamadoOpen(false);
           setSelectedAprendizLlamado(null);
         }, 3000);
       } else {
-        alert(result.error || 'Error al enviar el llamado de atención');
+        alert(result.error || 'Error al registrar el llamado de atención');
       }
     } catch (err) {
       console.error('Error sending llamado:', err);
@@ -552,9 +728,15 @@ Servicio Nacional de Aprendizaje (SENA)
     a => a.estadoIntervencion === 'Sin intervención'
   ).length;
 
-  const countAlto = store.aprendices.filter(a => a.nivelRiesgo === 'Alto').length;
-  const countMedio = store.aprendices.filter(a => a.nivelRiesgo === 'Medio').length;
-  const countBajo = store.aprendices.filter(a => a.nivelRiesgo === 'Bajo').length;
+  const countRemitidosBienestar = store.aprendices.filter(
+    a => a.estadoIntervencion === 'Remitido a Bienestar'
+  ).length;
+
+  const countDesercion = store.aprendices.filter(a => a.estadoSeguimiento === 'Posible deserción').length;
+  const countAlto = store.aprendices.filter(a => a.estadoSeguimiento === 'Riesgo alto').length;
+  const countMedio = store.aprendices.filter(a => a.estadoSeguimiento === 'Riesgo medio').length;
+  const countBajo = store.aprendices.filter(a => a.estadoSeguimiento === 'Riesgo bajo').length;
+  const countSinDato = store.aprendices.filter(a => a.estadoSeguimiento === 'Sin dato suficiente').length;
 
   // Modals Triggers
   const triggerIndividualIntervention = (ap: Aprendiz) => {
@@ -1168,9 +1350,13 @@ Servicio Nacional de Aprendizaje (SENA)
       {/* Overview statistical count cards (Clicking applies risk filter) */}
       <DashboardCards
         total={store.aprendices.length}
+        desercion={countDesercion}
         alto={countAlto}
         medio={countMedio}
         bajo={countBajo}
+        sinDato={countSinDato}
+        sinIntervencion={countUnIntervened}
+        remitidosBienestar={countRemitidosBienestar}
         selectedFilter={store.filterRiesgo}
         onFilterSelect={(item) => store.setFilterRiesgo(item)}
       />
@@ -1243,7 +1429,7 @@ Servicio Nacional de Aprendizaje (SENA)
             <div className="bg-gradient-to-r from-red-600 to-red-700 py-4 px-6 text-white flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <Mail className="w-5 h-5 animate-pulse" />
-                <h3 className="font-extrabold text-sm tracking-wide uppercase">Generar y Enviar Llamado de Atención Formal</h3>
+                <h3 className="font-extrabold text-sm tracking-wide uppercase">Generar y Registrar Llamado de Atención</h3>
               </div>
               <button 
                 type="button" 
@@ -1258,7 +1444,7 @@ Servicio Nacional de Aprendizaje (SENA)
             {llamadoSuccessMessage ? (
               <div className="p-8 text-center flex flex-col items-center justify-center space-y-4">
                 <CheckCircle2 className="w-16 h-16 text-emerald-600 animate-bounce" />
-                <h4 className="text-xl font-bold text-slate-800">¡Notificación Enviada!</h4>
+                <h4 className="text-xl font-bold text-slate-800">¡Llamado de Atención Guardado!</h4>
                 <p className="text-sm text-slate-600 max-w-md mx-auto">{llamadoSuccessMessage}</p>
                 <div className="w-full bg-slate-100 h-1 rounded-full overflow-hidden">
                   <div className="bg-emerald-600 h-1 animate-shrink" style={{ animationDuration: '3s' }}></div>
@@ -1267,37 +1453,147 @@ Servicio Nacional de Aprendizaje (SENA)
             ) : (
               <form onSubmit={handleEnviarLlamadoConfirmado} className="flex-1 flex flex-col overflow-hidden">
                 {/* Scrollable Form Body */}
-                <div className="p-6 space-y-4 overflow-y-auto text-left">
+                <div className="p-5 space-y-4 overflow-y-auto text-left">
                   
-                  {/* Student Quick Stats Card */}
-                  <div className="bg-red-50/50 rounded-xl p-4 border border-red-100/60 grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
-                    <div className="space-y-0.5">
-                      <span className="text-slate-400 font-medium">Aprendiz</span>
-                      <p className="font-black text-slate-800 truncate" title={selectedAprendizLlamado.nombre}>{selectedAprendizLlamado.nombre}</p>
-                    </div>
-                    <div className="space-y-0.5">
-                      <span className="text-slate-400 font-medium">Documento</span>
-                      <p className="font-bold text-slate-700">{selectedAprendizLlamado.documento}</p>
-                    </div>
-                    <div className="space-y-0.5">
-                      <span className="text-slate-400 font-medium">Evidencias Pendientes</span>
-                      <p className="font-extrabold text-red-600">
-                        {(() => {
-                          const evs = selectedAprendizLlamado.evidencias || {};
-                          let count = 0;
-                          Object.entries(evs).forEach(([_, val]) => {
-                            const valStr = typeof val === 'object' && val !== null ? (val as any).estado : String(val);
-                            if (valStr === 'D' || valStr === '-' || valStr === '' || !valStr) count++;
-                          });
-                          return count;
-                        })()} Evidencias
-                      </p>
-                    </div>
-                    <div className="space-y-0.5">
-                      <span className="text-slate-400 font-medium">Inasistencia</span>
-                      <p className="font-bold text-amber-700">{selectedAprendizLlamado.diasSinAcceso || 0} días sin acceso</p>
-                    </div>
-                  </div>
+                  {/* Detailed Student Bento Profile Card */}
+                  {(() => {
+                    const getACountLocal = (learner: Aprendiz) => {
+                      if (!learner || !learner.evidencias) return 0;
+                      return Object.values(learner.evidencias).filter(v => {
+                        const valStr = v && typeof v === 'object' ? (v as any).estado : String(v);
+                        return valStr === 'A';
+                      }).length;
+                    };
+
+                    const getDCountLocal = (learner: Aprendiz) => {
+                      if (!learner || !learner.evidencias) return 0;
+                      return Object.values(learner.evidencias).filter(v => {
+                        const valStr = v && typeof v === 'object' ? (v as any).estado : String(v);
+                        return valStr === 'D';
+                      }).length;
+                    };
+
+                    const getTotalCountLocal = (learner: Aprendiz) => {
+                      if (!learner || !learner.evidencias) return 0;
+                      return Object.keys(learner.evidencias).length;
+                    };
+
+                    const totalEv = getTotalCountLocal(selectedAprendizLlamado);
+                    const evAprobadas = getACountLocal(selectedAprendizLlamado);
+                    const evDesaprobadas = getDCountLocal(selectedAprendizLlamado);
+                    const evEnviadas = evAprobadas + evDesaprobadas;
+                    const pendingCount = totalEv - evAprobadas;
+
+                    const priorCalls = (selectedAprendizLlamado.historialIntervenciones || []).filter(isAcademicCall);
+                    const nextCallNum = priorCalls.length + 1;
+                    const nextCallName = getOrdinalLlamadoText(nextCallNum);
+
+                    return (
+                      <div className="space-y-3">
+                        {/* Compact Profile Card */}
+                        <div className="bg-slate-50 rounded-xl p-4 border border-slate-200/60 space-y-3">
+                          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200/60 pb-2.5">
+                            <div>
+                              <h4 className="text-sm font-black text-slate-900">{selectedAprendizLlamado.nombre}</h4>
+                              <p className="text-[10px] text-slate-500 font-mono mt-0.5">
+                                CC: {selectedAprendizLlamado.documento} · {selectedAprendizLlamado.correo}
+                              </p>
+                            </div>
+                            <span className="text-[10px] font-extrabold px-2.5 py-1 bg-slate-200 text-slate-800 rounded-md uppercase tracking-wide">
+                              Ficha: {fichaInfo.numeroFicha}
+                            </span>
+                          </div>
+
+                          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs">
+                            {/* Column 1: Situación y Acceso */}
+                            <div className="space-y-2">
+                              <div>
+                                <span className="text-slate-400 block font-medium text-[9px] uppercase">Situación Académica</span>
+                                <span className={`inline-block font-extrabold text-[9px] px-1.5 py-0.5 rounded border mt-0.5 ${
+                                  selectedAprendizLlamado.estadoSeguimiento === 'Posible deserción'
+                                    ? 'bg-rose-50 text-rose-700 border-rose-200'
+                                    : selectedAprendizLlamado.estadoSeguimiento === 'Riesgo alto'
+                                    ? 'bg-red-50 text-red-700 border-red-200'
+                                    : 'bg-slate-100 text-slate-700 border-slate-200'
+                                }`}>
+                                  {selectedAprendizLlamado.estadoSeguimiento || 'Sin datos'}
+                                </span>
+                              </div>
+                              <div>
+                                <span className="text-slate-400 block font-medium text-[9px] uppercase">Estado de Acceso</span>
+                                <span className="font-extrabold text-slate-800 block mt-0.5">{selectedAprendizLlamado.estadoAcceso || 'Nunca ingresó'}</span>
+                              </div>
+                            </div>
+
+                            {/* Column 2: Inasistencia */}
+                            <div className="space-y-2">
+                              <div>
+                                <span className="text-slate-400 block font-medium text-[9px] uppercase">Último Ingreso</span>
+                                <span className="font-bold text-slate-800 block mt-0.5">{selectedAprendizLlamado.ultimoAcceso || 'Nunca'}</span>
+                              </div>
+                              <div>
+                                <span className="text-slate-400 block font-medium text-[9px] uppercase">Días sin acceso</span>
+                                <span className="font-extrabold text-amber-700 block mt-0.5">{selectedAprendizLlamado.diasSinAcceso || 0} días</span>
+                              </div>
+                            </div>
+
+                            {/* Column 3: Evidencias Breakdown */}
+                            <div className="space-y-1 sm:col-span-1 col-span-2 bg-white rounded-lg p-2.5 border border-slate-200/50">
+                              <span className="text-slate-400 block font-medium text-[9px] uppercase tracking-wider">Métricas de Evidencias</span>
+                              <div className="space-y-0.5 font-mono text-[10px] text-slate-700">
+                                <div className="flex justify-between">
+                                  <span>Total:</span>
+                                  <span className="font-bold">{totalEv}</span>
+                                </div>
+                                <div className="flex justify-between text-slate-900 font-bold border-t border-slate-100 pt-0.5">
+                                  <span>Enviadas:</span>
+                                  <span>{evEnviadas}</span>
+                                </div>
+                                <div className="flex justify-between text-emerald-700">
+                                  <span>Aprobadas:</span>
+                                  <span>{evAprobadas}</span>
+                                </div>
+                                <div className="flex justify-between text-rose-600">
+                                  <span>Desaprobadas:</span>
+                                  <span>{evDesaprobadas}</span>
+                                </div>
+                                <div className="flex justify-between text-amber-600 font-bold border-t border-slate-100 pt-0.5">
+                                  <span>Pendientes:</span>
+                                  <span>{pendingCount}</span>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Next Call indicator & Prior Called Warning list */}
+                        <div className="flex flex-col gap-2">
+                          <div className="flex items-center justify-between bg-amber-50/50 text-amber-900 border border-amber-200/65 rounded-xl p-3 text-xs font-semibold">
+                            <span>Siguiente registro en bitácora:</span>
+                            <span className="px-2 py-0.5 bg-amber-100 border border-amber-300 text-amber-950 rounded-md font-bold uppercase tracking-wider">
+                              {nextCallName} (#{nextCallNum})
+                            </span>
+                          </div>
+
+                          {priorCalls.length > 0 && (
+                            <div className="bg-rose-50/60 border border-rose-200/60 rounded-xl p-3 text-xs space-y-1">
+                              <span className="font-black text-rose-700 flex items-center gap-1">
+                                <AlertTriangle className="w-3.5 h-3.5" />
+                                Historial de Llamados Académicos Registrados ({priorCalls.length}):
+                              </span>
+                              <ul className="list-disc pl-4 space-y-0.5 text-slate-600 text-[11px]">
+                                {priorCalls.map((hist, idx) => (
+                                  <li key={idx}>
+                                    <span className="font-semibold">{hist.fecha}:</span> {getOrdinalLlamadoText(hist.numeroLlamado || (idx + 1))} ({hist.instructor || 'Instructor'}) - Pendientes: {hist.evidenciasPendientes || 0}
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })()}
 
                   {/* Mail fields */}
                   <div className="space-y-1">
@@ -1326,45 +1622,86 @@ Servicio Nacional de Aprendizaje (SENA)
                     <label className="block text-xs font-black text-slate-700 uppercase">Cuerpo de la Notificación (Editable):</label>
                     <textarea 
                       required
-                      rows={12}
+                      rows={10}
                       value={emailCuerpo}
                       onChange={e => setEmailCuerpo(e.target.value)}
-                      className="w-full flex-1 px-3 py-2 border border-slate-200 rounded-lg text-xs font-medium font-mono focus:border-red-500 focus:ring-1 focus:ring-red-500 outline-none leading-relaxed resize-none"
+                      className="w-full flex-1 px-3 py-2 border border-slate-200 rounded-lg text-xs font-medium font-mono focus:border-red-500 focus:ring-1 focus:ring-red-500 outline-none leading-relaxed resize-none bg-slate-50/50"
                     ></textarea>
                   </div>
 
                   <p className="text-[10px] text-slate-400 italic">
-                    * Al hacer clic en enviar, el sistema registrará de forma permanente el correo en la bitácora individual de seguimiento del aprendiz y sumará un llamado de atención. Si el aprendiz acumula más de 3 llamados, se escalará automáticamente una Alerta Crítica Administrativa.
+                    * Al guardar, el llamado se registrará formalmente en el expediente digital del aprendiz y cambiará su estado a "En seguimiento". Si acumula más de 3 llamados académicos, se levantará automáticamente una alerta administrativa crítica.
                   </p>
 
                 </div>
 
                 {/* Footer Buttons */}
-                <div className="border-t border-slate-100 bg-slate-50 py-3.5 px-6 flex justify-end gap-3 shrink-0">
-                  <button
-                    type="button"
-                    onClick={() => setIsLlamadoOpen(false)}
-                    className="bg-white hover:bg-slate-50 text-slate-600 text-xs font-bold py-2 px-4 rounded-lg border border-slate-200 transition-all cursor-pointer"
-                  >
-                    Cancelar
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={isSendingLlamado}
-                    className="bg-red-600 hover:bg-red-700 disabled:bg-red-400 text-white text-xs font-black py-2 px-5 rounded-lg shadow-md transition-all cursor-pointer flex items-center gap-1.5 active:scale-95"
-                  >
-                    {isSendingLlamado ? (
-                      <>
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                        <span>Enviando Correo...</span>
-                      </>
-                    ) : (
-                      <>
-                        <Send className="w-3.5 h-3.5" />
-                        <span>Enviar Notificación y Registrar</span>
-                      </>
-                    )}
-                  </button>
+                <div className="border-t border-slate-100 bg-slate-50 py-3 px-5 flex flex-wrap items-center justify-between gap-2 shrink-0">
+                  <div className="flex gap-2">
+                    {/* Copy to Clipboard Button */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard.writeText(emailCuerpo);
+                        setCopied(true);
+                        setTimeout(() => setCopied(false), 2000);
+                      }}
+                      className="bg-white hover:bg-slate-50 text-slate-700 text-xs font-bold py-1.5 px-3 rounded-lg border border-slate-200 transition-all flex items-center gap-1 cursor-pointer"
+                    >
+                      {copied ? (
+                        <>
+                          <Check className="w-3.5 h-3.5 text-emerald-600" />
+                          <span className="text-emerald-700">Copiado</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3.5 h-3.5 text-slate-500" />
+                          <span>Copiar texto</span>
+                        </>
+                      )}
+                    </button>
+
+                    {/* Open in Mail Client Button */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const mailtoUrl = `mailto:${encodeURIComponent(emailDestinatario)}?subject=${encodeURIComponent(emailAsunto)}&body=${encodeURIComponent(emailCuerpo)}`;
+                        window.location.href = mailtoUrl;
+                      }}
+                      className="bg-white hover:bg-slate-50 text-slate-700 text-xs font-bold py-1.5 px-3 rounded-lg border border-slate-200 transition-all flex items-center gap-1 cursor-pointer"
+                      title="Abrir este correo en Outlook / Gmail"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5 text-slate-500" />
+                      <span>Abrir correo</span>
+                    </button>
+                  </div>
+
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setIsLlamadoOpen(false)}
+                      className="bg-white hover:bg-slate-50 text-slate-600 text-xs font-bold py-1.5 px-4 rounded-lg border border-slate-200 transition-all cursor-pointer"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={isSendingLlamado}
+                      className="bg-red-650 hover:bg-red-700 disabled:bg-red-400 text-white text-xs font-black py-1.5 px-4 rounded-lg shadow-sm transition-all cursor-pointer flex items-center gap-1.5 active:scale-95"
+                    >
+                      {isSendingLlamado ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          <span>Registrando...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Send className="w-3.5 h-3.5" />
+                          <span>Registrar llamado</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
                 </div>
               </form>
             )}

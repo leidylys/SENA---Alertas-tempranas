@@ -14,7 +14,7 @@ export interface Intervencion {
   id: string;
   fecha: string;
   instructor: string;
-  estadoIntervencion: 'Sin intervención' | 'En seguimiento' | 'Intervenido';
+  estadoIntervencion: 'Sin intervención' | 'En seguimiento' | 'Intervenido' | 'Remitido a Bienestar' | 'Cerrado';
   estrategias?: string[];
   causas?: string[];
   estrategiaPersonalizada?: string;
@@ -26,6 +26,9 @@ export interface Intervencion {
   evidenciasPendientes?: number | null;
   diasSinAcceso?: number | null;
   numeroLlamado?: number | null;
+  fechaLimite?: string;
+  compromiso?: string;
+  estadoCompromiso?: string;
 }
 
 export interface Aprendiz {
@@ -39,13 +42,22 @@ export interface Aprendiz {
   diasSinAcceso: number | null;    // calculated days since last access
   puntajeRiesgo: number;
   nivelRiesgo: 'Bajo' | 'Medio' | 'Alto';
-  estadoIntervencion: 'Sin intervención' | 'En seguimiento' | 'Intervenido';
+  estadoIntervencion: 'Sin intervención' | 'En seguimiento' | 'Intervenido' | 'Remitido a Bienestar' | 'Cerrado';
   historialIntervenciones: Intervencion[];
   resumenFases?: Record<string, any>;
   estadoAprendiz?: 'Activo' | 'Inactivo';
   observacionEstado?: string | null;
   fechaUltimoReporte?: string | null;
   dbId?: number;
+  totalEvidencias?: number;
+  totalAprobadas?: number;
+  totalPendientes?: number;
+  totalNoAprobadas?: number;
+  estadoAcceso?: string;
+  estadoSeguimiento?: 'Posible deserción' | 'Riesgo alto' | 'Riesgo medio' | 'Riesgo bajo' | 'Sin dato suficiente';
+  alertaPermanencia?: string;
+  accionRecomendada?: string;
+  numeroFicha?: string; // Optative
 }
 
 export interface Evidencia {
@@ -68,8 +80,8 @@ export interface AlertasEstado {
   hasPendingChanges: boolean;
   selectedAprendicesIds: string[];
   filterSearch: string;
-  filterRiesgo: 'Todos' | 'Bajo' | 'Medio' | 'Alto';
-  filterEstado: 'Todos' | 'Sin intervención' | 'En seguimiento' | 'Intervenido';
+  filterRiesgo: 'Todos' | 'Posible deserción' | 'Riesgo alto' | 'Riesgo medio' | 'Riesgo bajo' | 'Sin dato suficiente';
+  filterEstado: 'Todos' | 'Sin intervención' | 'En seguimiento' | 'Intervenido' | 'Remitido a Bienestar' | 'Cerrado';
   sortColumn: keyof Aprendiz | 'no_entregadas' | 'evidencias_d' | '';
   sortDirection: 'asc' | 'desc';
 }

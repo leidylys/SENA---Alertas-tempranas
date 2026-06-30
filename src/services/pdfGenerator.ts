@@ -389,3 +389,228 @@ export function generarPdfIndividual(aprendiz: Aprendiz, fichaInfo: FichaInfo): 
 
   return doc;
 }
+
+/**
+ * Generates an official Bienestar referral document for a learner in possible desertion.
+ */
+export function generarPdfBienestar(
+  aprendiz: Aprendiz,
+  fichaInfo: FichaInfo,
+  causa: string,
+  descripcion: string,
+  fecha: string
+): jsPDF {
+  const doc = new jsPDF('p', 'mm', 'a4');
+  
+  // Header
+  drawSenaLogo(doc, 15, 12);
+  
+  doc.setTextColor(190, 24, 74); // Rose-700 / Rose-800
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(13);
+  doc.text('REMISIÓN OFICIAL AL ÁREA DE BIENESTAR AL APRENDIZ', 55, 17);
+  
+  doc.setFontSize(9);
+  doc.setTextColor(97, 97, 97);
+  doc.setFont('helvetica', 'normal');
+  doc.text('SENA - Plan Nacional de Retención de la Permanencia', 55, 22);
+
+  doc.setDrawColor(190, 24, 74); // Rose
+  doc.setLineWidth(0.8);
+  doc.line(15, 30, 195, 30);
+
+  // Box: Aprendiz Info
+  doc.setFillColor(253, 242, 245); // Rose warm tint
+  doc.rect(15, 35, 180, 28, 'F');
+  
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(9.5);
+  doc.setTextColor(190, 24, 74);
+  doc.text('INFORMACIÓN GENERAL DEL CASO', 18, 41);
+
+  doc.setFontSize(9);
+  doc.setTextColor(33, 33, 33);
+  doc.setFont('helvetica', 'normal');
+  doc.text(`Aprendiz: ${aprendiz.nombre}`, 18, 47);
+  doc.text(`Identificación: ${aprendiz.documento}`, 18, 52);
+  doc.text(`Correo: ${aprendiz.correo}`, 18, 57);
+
+  doc.text(`Ficha N°: ${fichaInfo.numeroFicha}`, 120, 47);
+  doc.text(`Programa: ${fichaInfo.programaFormacion}`, 120, 52);
+  doc.text(`Inasistencia: ${aprendiz.diasSinAcceso || 0} días sin acceso`, 120, 57);
+
+  // Section: Causa and Description
+  doc.setTextColor(190, 24, 74);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(10.5);
+  doc.text('DIAGNÓSTICO Y MOTIVOS DE LA REMISIÓN', 15, 71);
+
+  doc.setTextColor(33, 33, 33);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(9);
+  doc.text(`Causa Declarada:`, 18, 77);
+  doc.setFont('helvetica', 'normal');
+  doc.text(`${causa}`, 48, 77);
+
+  doc.setFont('helvetica', 'bold');
+  doc.text(`Fecha de Solicitud:`, 18, 83);
+  doc.setFont('helvetica', 'normal');
+  doc.text(`${fecha}`, 52, 83);
+
+  // Detailed Description Multi-line
+  doc.setFont('helvetica', 'bold');
+  doc.text(`Descripción Detallada del Caso y Acciones de Acompañamiento Previas:`, 18, 91);
+  
+  doc.setFont('helvetica', 'italic');
+  doc.setFontSize(9);
+  doc.setTextColor(66, 66, 66);
+  const textLines = doc.splitTextToSize(descripcion || 'Sin descripción adicional provista por el instructor.', 174);
+  doc.text(textLines, 18, 97);
+
+  // Recommendation footer
+  const boxY = 110 + (textLines.length * 4);
+  doc.setFillColor(245, 245, 245);
+  doc.rect(15, boxY, 180, 24, 'F');
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(8.5);
+  doc.setTextColor(33, 33, 33);
+  doc.text('ACCIONES SUGERIDAS PARA BIENESTAR AL APRENDIZ:', 18, boxY + 6);
+  doc.setFont('helvetica', 'normal');
+  doc.text('1. Brindar orientación psicológica y social inmediata para evaluar desmotivación académica.', 18, boxY + 11);
+  doc.text('2. Coordinar acompañamiento familiar o tutorías personalizadas si existen causales socioeconómicas.', 18, boxY + 15);
+  doc.text('3. Emitir concepto no vinculante de apoyo de sostenimiento o alimentación si aplica.', 18, boxY + 19);
+
+  // Signature Block
+  const sigY = Math.max(boxY + 35, 215);
+  doc.setDrawColor(189, 189, 189);
+  doc.line(15, sigY + 15, 85, sigY + 15);
+  doc.setFont('helvetica', 'bold');
+  doc.text('Firma del Instructor Responsable', 15, sigY + 19);
+  doc.setFont('helvetica', 'normal');
+  doc.text(`${fichaInfo.instructor}`, 15, sigY + 24);
+
+  doc.line(115, sigY + 15, 185, sigY + 15);
+  doc.setFont('helvetica', 'bold');
+  doc.text('Firma Responsable Bienestar Aprendiz', 115, sigY + 19);
+  doc.setFont('helvetica', 'normal');
+  doc.text('Coordinación de Bienestar - SENA', 115, sigY + 24);
+
+  return doc;
+}
+
+/**
+ * Generates an official Academic Improvement Plan PDF document.
+ */
+export function generarPdfPlanMejoramiento(
+  aprendiz: Aprendiz,
+  fichaInfo: FichaInfo,
+  estrategias: string,
+  fechaLimite: string,
+  compromisos: string
+): jsPDF {
+  const doc = new jsPDF('p', 'mm', 'a4');
+  
+  // Header
+  drawSenaLogo(doc, 15, 12);
+  
+  doc.setTextColor(0, 120, 50); // SENA Green
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(13);
+  doc.text('CONCERTACIÓN DE PLAN DE MEJORAMIENTO ACADÉMICO', 55, 17);
+  
+  doc.setFontSize(9);
+  doc.setTextColor(97, 97, 97);
+  doc.setFont('helvetica', 'normal');
+  doc.text('SENA - Proceso de Gestión de Formación Profesional Integral', 55, 22);
+
+  doc.setDrawColor(57, 169, 0); // SENA light green
+  doc.setLineWidth(0.8);
+  doc.line(15, 30, 195, 30);
+
+  // Box: Apprentice Metadata
+  doc.setFillColor(240, 248, 235); // Green warm tint
+  doc.rect(15, 35, 180, 26, 'F');
+  
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(9.5);
+  doc.setTextColor(0, 120, 50);
+  doc.text('DATOS CONVENIDOS DEL PLAN DE MEJORAMIENTO', 18, 41);
+
+  doc.setFontSize(9);
+  doc.setTextColor(33, 33, 33);
+  doc.setFont('helvetica', 'normal');
+  doc.text(`Aprendiz: ${aprendiz.nombre}`, 18, 47);
+  doc.text(`Documento: ${aprendiz.documento}`, 18, 52);
+  doc.text(`Correo: ${aprendiz.correo}`, 18, 57);
+
+  doc.text(`Ficha Programa: ${fichaInfo.numeroFicha}`, 120, 47);
+  doc.text(`Programa: ${fichaInfo.programaFormacion}`, 120, 52);
+  doc.text(`Fecha Concertación: ${new Date().toLocaleDateString()}`, 120, 57);
+
+  // Section: Actividades y Estrategias
+  doc.setTextColor(0, 120, 50);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(10.5);
+  doc.text('1. ESTRATEGIAS DE RECUPERACIÓN PEDAGÓGICA', 15, 71);
+
+  doc.setTextColor(33, 33, 33);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(9);
+  doc.text(`Fecha Límite Concedida:`, 18, 77);
+  doc.setFont('helvetica', 'normal');
+  doc.text(`${fechaLimite || 'No especificada'}`, 60, 77);
+
+  doc.setFont('helvetica', 'bold');
+  doc.text(`Estrategias y Actividades Concertadas a Desarrollar:`, 18, 85);
+  doc.setFont('helvetica', 'normal');
+  const estLines = doc.splitTextToSize(estrategias || 'Sustentar evidencias desaprobadas y presentar portafolio de evidencias completo.', 174);
+  doc.text(estLines, 18, 91);
+
+  const startCompromisoY = 96 + (estLines.length * 4);
+  
+  // Section: Compromisos
+  doc.setTextColor(0, 120, 50);
+  doc.setFont('helvetica', 'bold');
+  doc.text('2. COMPROMISOS ADQUIRIDOS POR EL APRENDIZ', 15, startCompromisoY);
+
+  doc.setTextColor(33, 33, 33);
+  doc.setFont('helvetica', 'normal');
+  const compLines = doc.splitTextToSize(compromisos || 'Me comprometo a asistir a las tutorías programadas por el instructor vocero y a cargar la totalidad de las evidencias acordadas en la plataforma de aprendizaje LMS antes del vencimiento del plazo fijado.', 174);
+  doc.text(compLines, 18, startCompromisoY + 6);
+
+  const startWarningY = startCompromisoY + 12 + (compLines.length * 4);
+
+  // Section: Advertencias
+  doc.setFillColor(255, 253, 230); // yellow warning tint
+  doc.rect(15, startWarningY, 180, 20, 'F');
+  doc.setDrawColor(217, 119, 6);
+  doc.rect(15, startWarningY, 180, 20);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(8);
+  doc.setTextColor(180, 83, 9);
+  doc.text('⚠️ ADVERTENCIA DE INCUMPLIMIENTO:', 18, startWarningY + 5);
+  doc.setFont('helvetica', 'normal');
+  doc.text('El incumplimiento de los compromisos aquí pactados acarreará el traslado automático del caso al Comité de Evaluación y Seguimiento', 18, startWarningY + 10);
+  doc.text('de Centro, lo cual podría desencadenar una recomendación de sanción o cancelación de matrícula.', 18, startWarningY + 14);
+
+  // Signature Block
+  const sigY = Math.max(startWarningY + 35, 220);
+  doc.setDrawColor(189, 189, 189);
+  doc.line(15, sigY + 12, 85, sigY + 12);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(8.5);
+  doc.setTextColor(33, 33, 33);
+  doc.text('Firma de Conformidad del Aprendiz', 15, sigY + 16);
+  doc.setFont('helvetica', 'normal');
+  doc.text(`Aprendiz: ${aprendiz.nombre}`, 15, sigY + 20);
+  doc.text(`Identificación: CC ${aprendiz.documento}`, 15, sigY + 24);
+
+  doc.line(115, sigY + 12, 185, sigY + 12);
+  doc.setFont('helvetica', 'bold');
+  doc.text('Firma del Instructor Responsable', 115, sigY + 16);
+  doc.setFont('helvetica', 'normal');
+  doc.text(`${fichaInfo.instructor}`, 115, sigY + 20);
+  doc.text('Centro de Servicios y Gestión Empresarial', 115, sigY + 24);
+
+  return doc;
+}

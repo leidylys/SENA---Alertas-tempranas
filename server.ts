@@ -2567,6 +2567,34 @@ async function startServer() {
   });
 
 
+  function isAcademicCall(hist: any): boolean {
+    if (!hist) return false;
+    const isTypeMail = hist.tipoSeguimiento === 'Correo de llamado a ponerse al día';
+    const hasLlamadoInType = typeof hist.tipoSeguimiento === 'string' && hist.tipoSeguimiento.toLowerCase().includes('llamado');
+    const hasValidNum = typeof hist.numeroLlamado === 'number' && hist.numeroLlamado > 0;
+    return isTypeMail || hasLlamadoInType || hasValidNum;
+  }
+
+  function getOrdinalLlamadoText(num: number): string {
+    const ordinals = [
+      'Primer llamado',
+      'Segundo llamado',
+      'Tercer llamado',
+      'Cuarto llamado',
+      'Quinto llamado',
+      'Sexto llamado',
+      'Séptimo llamado',
+      'Octavo llamado',
+      'Noveno llamado',
+      'Décimo llamado'
+    ];
+    if (num >= 1 && num <= 10) {
+      return ordinals[num - 1];
+    }
+    return `Llamado #${num}`;
+  }
+
+
   // 10. Record and track student "llamados" with automatic escalation to administration
   app.post('/api/aprendices/enviar-llamado', requireAuth, async (req: AuthRequest, res) => {
     try {
@@ -2605,12 +2633,31 @@ async function startServer() {
       if (memStudent) {
         // Count previous calls in memoryDb
         const prevCallsMem = memoryDb.seguimientosHistorico.filter(
-          log => log.aprendizFichaId === memStudent.id && log.tipoSeguimiento === 'Correo de llamado a ponerse al día'
+          log => log.aprendizFichaId === memStudent.id && isAcademicCall(log)
         );
         nextCallNumMemory = prevCallsMem.length + 1;
 
         // Update state to 'En seguimiento'
         memStudent.estadoIntervencion = 'En seguimiento';
+
+        const totalEv = req.body.totalEvidencias || 0;
+        const evEnviadas = req.body.evidenciasEnviadas || 0;
+        const evAprobadas = req.body.evidenciasAprobadas || 0;
+        const evDesaprobadas = req.body.evidenciasDesaprobadas || 0;
+        const obs = `Registro de ${getOrdinalLlamadoText(nextCallNumMemory)}.`;
+
+        const detailsMemory = `Asunto: ${asunto || 'Llamado académico'}
+Ficha: ${fichaId}
+Fecha de último ingreso: ${ultimoAcceso || 'Nunca ingresó'}
+Días sin acceso: ${diasSinAcceso || 0}
+Total evidencias: ${totalEv}
+Evidencias enviadas: ${evEnviadas}
+Evidencias aprobadas: ${evAprobadas}
+Evidencias desaprobadas: ${evDesaprobadas}
+Evidencias pendientes: ${evidenciasPendientes || 0}
+Observación: ${obs}
+--------------------------------------------------
+${mensaje}`;
 
         // Add history log
         memoryDb.seguimientosHistorico.push({
@@ -2620,7 +2667,7 @@ async function startServer() {
           fecha: new Date(),
           estadoPrevio: memStudent.estadoIntervencion,
           estadoNuevo: 'En seguimiento',
-          detalles: `Llamado #${nextCallNumMemory} enviado - Asunto: ${asunto || 'Llamado a ponerse al día'}. Evidencias pendientes: ${evidenciasPendientes}. Días sin acceso: ${diasSinAcceso}. Detalle del mensaje: ${mensaje}`,
+          detalles: detailsMemory,
           tipoSeguimiento: 'Correo de llamado a ponerse al día',
           evidenciasPendientes: Number(evidenciasPendientes || 0),
           diasSinAcceso: Number(diasSinAcceso || 0),
@@ -2680,13 +2727,30 @@ async function startServer() {
           const pgStudent = learnerResult[0];
 
           // Count existing calls in Postgres
-          const prevCallsPg = await db.select()
+          const allLogsPg = await db.select()
             .from(seguimientosHistorico)
-            .where(and(
-              eq(seguimientosHistorico.aprendizFichaId, pgStudent.id),
-              eq(seguimientosHistorico.tipoSeguimiento, 'Correo de llamado a ponerse al día')
-            ));
+            .where(eq(seguimientosHistorico.aprendizFichaId, pgStudent.id));
+          const prevCallsPg = allLogsPg.filter(isAcademicCall);
           pgNextCallNum = prevCallsPg.length + 1;
+
+          const totalEv = req.body.totalEvidencias || 0;
+          const evEnviadas = req.body.evidenciasEnviadas || 0;
+          const evAprobadas = req.body.evidenciasAprobadas || 0;
+          const evDesaprobadas = req.body.evidenciasDesaprobadas || 0;
+          const obs = `Registro de ${getOrdinalLlamadoText(pgNextCallNum)}.`;
+
+          const detailsPg = `Asunto: ${asunto || 'Llamado académico'}
+Ficha: ${fichaId}
+Fecha de último ingreso: ${ultimoAcceso || 'Nunca ingresó'}
+Días sin acceso: ${diasSinAcceso || 0}
+Total evidencias: ${totalEv}
+Evidencias enviadas: ${evEnviadas}
+Evidencias aprobadas: ${evAprobadas}
+Evidencias desaprobadas: ${evDesaprobadas}
+Evidencias pendientes: ${evidenciasPendientes || 0}
+Observación: ${obs}
+--------------------------------------------------
+${mensaje}`;
 
           // Insert followup log
           await db.insert(seguimientosHistorico)
@@ -2695,7 +2759,7 @@ async function startServer() {
               instructorId: insId,
               estadoPrevio: pgStudent.estadoIntervencion,
               estadoNuevo: 'En seguimiento',
-              detalles: `Llamado #${pgNextCallNum} enviado - Asunto: ${asunto || 'Llamado a ponerse al día'}. Evidencias pendientes: ${evidenciasPendientes}. Días sin acceso: ${diasSinAcceso}. Detalle del mensaje: ${mensaje}`,
+              detalles: detailsPg,
               tipoSeguimiento: 'Correo de llamado a ponerse al día',
               evidenciasPendientes: Number(evidenciasPendientes || 0),
               diasSinAcceso: Number(diasSinAcceso || 0),

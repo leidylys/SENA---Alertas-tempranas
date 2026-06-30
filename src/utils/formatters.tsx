@@ -33,24 +33,36 @@ export function badgeNivel(nivel: 'Bajo' | 'Medio' | 'Alto'): React.JSX.Element 
 /**
  * Returns Tailwind css and visual badge elements for Intervention Statuses.
  */
-export function badgeEstado(estado: 'Sin intervención' | 'En seguimiento' | 'Intervenido'): React.JSX.Element {
+export function badgeEstado(estado: string): React.JSX.Element {
   switch (estado) {
     case 'Intervenido':
       return (
-        <span className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-md bg-sena-50 text-sena-800 border border-sena-100">
+        <span className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-md bg-sena-50 text-sena-800 border border-sena-100 shrink-0">
           Intervenido
         </span>
       );
     case 'En seguimiento':
       return (
-        <span className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-md bg-blue-50 text-blue-800 border border-blue-100">
+        <span className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-md bg-blue-50 text-blue-800 border border-blue-100 shrink-0">
           En seguimiento
+        </span>
+      );
+    case 'Remitido a Bienestar':
+      return (
+        <span className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-md bg-rose-50 text-rose-800 border border-rose-100 shrink-0">
+          Remitido a Bienestar
+        </span>
+      );
+    case 'Cerrado':
+      return (
+        <span className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-md bg-emerald-55 text-[#007832] border border-emerald-100 shrink-0">
+          Cerrado
         </span>
       );
     case 'Sin intervención':
     default:
       return (
-        <span className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-md bg-slate-50 text-slate-600 border border-slate-100">
+        <span className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded-md bg-slate-50 text-slate-600 border border-slate-100 shrink-0">
           Sin intervención
         </span>
       );

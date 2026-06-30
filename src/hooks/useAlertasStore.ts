@@ -10,7 +10,7 @@ export function useAlertasStore() {
   
   // Filtering and Sorting
   const [filterSearch, setFilterSearch] = useState<string>('');
-  const [filterRiesgo, setFilterRiesgo] = useState<'Todos' | 'Bajo' | 'Medio' | 'Alto'>('Todos');
+  const [filterRiesgo, setFilterRiesgo] = useState<'Todos' | 'Posible deserción' | 'Riesgo alto' | 'Riesgo medio' | 'Riesgo bajo' | 'Sin dato suficiente'>('Todos');
   const [filterEstado, setFilterEstado] = useState<'Todos' | 'Sin intervención' | 'En seguimiento' | 'Intervenido'>('Todos');
   const [sortColumn, setSortColumn] = useState<string>('');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
