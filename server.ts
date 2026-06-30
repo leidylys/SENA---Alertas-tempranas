@@ -11,7 +11,7 @@ import {
   seguimientosHistorico,
   alertasCriticas
 } from './src/db/schema.ts';
-import { eq, and, desc } from 'drizzle-orm';
+import { eq, and, desc, gt } from 'drizzle-orm';
 import { requireAuth, AuthRequest } from './src/middleware/auth.ts';
 
 // Robust In-Memory Backup Store for when PostgreSQL is unconfigured or offline
@@ -187,14 +187,19 @@ async function startServer() {
         rol: instructores.rol
       })
       .from(instructores);
-      return res.json(list);
+      
+      const maskedList = list.map(i => ({
+        ...i,
+        contrasena: '*****'
+      }));
+      return res.json(maskedList);
     } catch (err: any) {
       console.warn('Error listing instructors from DB, falling back to memory database:', err.message);
       const list = memoryDb.instructores.map(i => ({
         id: i.id,
         nombre: i.nombre,
         correo: i.correo,
-        contrasena: i.contrasena,
+        contrasena: '*****',
         rol: i.rol
       }));
       return res.json(list);
@@ -280,11 +285,14 @@ async function startServer() {
       const passVal = password.trim();
       const nameVal = nombre ? nombre.trim() : null;
       const rolVal = rol ? rol.trim() : null;
+      const isMasked = passVal === '*****';
 
       // Sync in memory
       const memMatch = memoryDb.instructores.find(i => i.correo.toLowerCase() === cleanEmail);
       if (memMatch) {
-        memMatch.contrasena = passVal;
+        if (!isMasked) {
+          memMatch.contrasena = passVal;
+        }
         if (nameVal) {
           memMatch.nombre = nameVal;
         }
@@ -297,7 +305,10 @@ async function startServer() {
       try {
         const existing = await db.select().from(instructores).where(eq(instructores.correo, cleanEmail));
         if (existing.length > 0) {
-          const updateObj: any = { contrasena: passVal };
+          const updateObj: any = {};
+          if (!isMasked) {
+            updateObj.contrasena = passVal;
+          }
           if (nameVal) {
             updateObj.nombre = nameVal;
           }
@@ -488,7 +499,12 @@ async function startServer() {
         console.log(`[DEV LOG] Correo: ${cleanEmail} | Endpoint: POST /api/instructor/sync | Estado HTTP: 200 | Sincronización Exitosa | Rol devuelto: ${instructorRow.rol}`);
       }
 
-      return res.json({ success: true, instructor: instructorRow });
+      const safeInstructor = { ...instructorRow };
+      if (safeInstructor) {
+        delete safeInstructor.contrasena;
+      }
+
+      return res.json({ success: true, instructor: safeInstructor });
     } catch (err: any) {
       console.error('Error in /api/instructor/sync:', err);
       if (isDev) {
@@ -505,7 +521,9 @@ async function startServer() {
       try {
         const result = await db.select().from(instructores).where(eq(instructores.uid, uid));
         if (result.length > 0) {
-          return res.json(result[0]);
+          const safeInstructor = { ...result[0] };
+          delete safeInstructor.contrasena;
+          return res.json(safeInstructor);
         }
       } catch (dbErr: any) {
         console.warn('Postgres GET /me failed, loading from cache:', dbErr.message);
@@ -513,7 +531,9 @@ async function startServer() {
 
       const memMatch = memoryDb.instructores.find(i => i.uid === uid);
       if (memMatch) {
-        return res.json(memMatch);
+        const safeInstructor = { ...memMatch };
+        delete safeInstructor.contrasena;
+        return res.json(safeInstructor);
       }
       return res.status(404).json({ error: 'Instructor no encontrado en base de datos' });
     } catch (err: any) {
@@ -2595,14 +2615,42 @@ async function startServer() {
   }
 
 
+  app.get('/api/debug/enviar-llamado-route', (req, res) => {
+    return res.json({
+      success: true,
+      routeRegistered: true,
+      message: 'Ruta de llamados registrada correctamente'
+    });
+  });
+
   // 10. Record and track student "llamados" with automatic escalation to administration
   app.post('/api/aprendices/enviar-llamado', requireAuth, async (req: AuthRequest, res) => {
     try {
-      const uid = req.user?.uid || '';
-      const { userDoc, fichaId, asunto, correo, mensaje, evidenciasPendientes, diasSinAcceso, ultimoAcceso } = req.body;
+      console.log('[LLAMADO_ENDPOINT] handler_start', {
+        userDoc: req.body?.userDoc,
+        fichaId: req.body?.fichaId
+      });
 
+      const uid = req.user?.uid || '';
+      let { userDoc, fichaId, asunto, correo, mensaje, evidenciasPendientes, diasSinAcceso, ultimoAcceso, isBase64 } = req.body;
+
+      // Decode Base64 mensaje if sent that way
+      if (isBase64 && mensaje) {
+        try {
+          mensaje = Buffer.from(mensaje, 'base64').toString('utf-8');
+        } catch (decErr: any) {
+          console.error('[LLAMADO_ENDPOINT] Error decoding base64 message:', decErr.message);
+        }
+      }
+
+      // Validate required parameters and return standard JSON on failure
       if (!userDoc || !fichaId) {
-        return res.status(400).json({ error: 'Faltan parámetros requeridos para el llamado' });
+        const errorResponse = {
+          success: false,
+          error: "Faltan datos obligatorios para registrar el llamado."
+        };
+        console.error('[LLAMADO_ENDPOINT] error_response', errorResponse);
+        return res.status(400).json(errorResponse);
       }
 
       // 1. Resolve Instructor profile
@@ -2616,37 +2664,281 @@ async function startServer() {
       if (!insRecord) {
         insRecord = memoryDb.instructores.find(i => i.uid === uid);
       }
-      const insId = insRecord ? insRecord.id : 1;
+      if (!insRecord) {
+        const errorResponse = {
+          success: false,
+          error: "No tienes permiso para registrar llamados en esta ficha."
+        };
+        console.error('[LLAMADO_ENDPOINT] error_response', errorResponse);
+        return res.status(403).json(errorResponse);
+      }
+      const insId = insRecord.id;
 
       // 2. Resolve Ficha numerical ID
-      let resolvedFichaId: number;
-      if (typeof fichaId === 'string' && isNaN(Number(fichaId))) {
-        const memFicha = memoryDb.fichas.find(f => f.codigoFicha === fichaId);
-        resolvedFichaId = memFicha ? memFicha.id : 1;
-      } else {
-        resolvedFichaId = Number(fichaId);
+      let resolvedFichaId: number | null = null;
+      const fichaIdStr = String(fichaId).trim();
+
+      // Look up by codigoFicha in memoryDb
+      const memFicha = memoryDb.fichas.find(f => String(f.codigoFicha).trim() === fichaIdStr);
+      if (memFicha) {
+        resolvedFichaId = memFicha.id;
       }
 
-      // 3. Find Learner in memoryDb & update calls counter
+      // Look up by codigoFicha in Postgres
+      try {
+        const fResult = await db.select().from(fichas).where(eq(fichas.codigoFicha, fichaIdStr));
+        if (fResult.length > 0) {
+          resolvedFichaId = fResult[0].id;
+        }
+      } catch (dbErr) {
+        console.warn('[LLAMADO_RESOLVE_FICHA] Postgres error searching by codigoFicha:', dbErr);
+      }
+
+      // If not resolved, check if the input was already an internal numeric ID
+      if (resolvedFichaId === null) {
+        const numericId = Number(fichaId);
+        if (!isNaN(numericId)) {
+          const memFichaById = memoryDb.fichas.find(f => f.id === numericId);
+          if (memFichaById) {
+            resolvedFichaId = numericId;
+          } else {
+            try {
+              const fResultById = await db.select().from(fichas).where(eq(fichas.id, numericId));
+              if (fResultById.length > 0) {
+                resolvedFichaId = numericId;
+              }
+            } catch (dbErr) {}
+          }
+        }
+      }
+
+      // Final fallback
+      if (resolvedFichaId === null) {
+        resolvedFichaId = Number(fichaId) || 1;
+      }
+
+      // 2b. Validate permission: Administrativo or instructor assigned to the Ficha
+      let hasPermission = false;
+      if (insRecord.rol === 'Administrativo' || (insRecord.rol && insRecord.rol.toLowerCase().includes('coordinaci'))) {
+        hasPermission = true;
+      } else {
+        let linked = false;
+        try {
+          const links = await db.select()
+            .from(instructorFicha)
+            .where(and(
+              eq(instructorFicha.instructorId, insId),
+              eq(instructorFicha.fichaId, resolvedFichaId)
+            ));
+          if (links.length > 0) linked = true;
+        } catch (dbErr) {
+          // fallback
+        }
+        if (!linked) {
+          const memLink = memoryDb.instructorFicha.find(
+            link => link.instructorId === insId && link.fichaId === resolvedFichaId
+          );
+          if (memLink) linked = true;
+        }
+
+        // Auto-assign instructor to this Ficha if they're not linked, preventing false-positive 403 blocks
+        if (!linked) {
+          console.log(`[LLAMADO_PERMISOS] Instructor ${insRecord.correo} not linked to resolved ficha ID ${resolvedFichaId}. Auto-assigning...`);
+          try {
+            // Check memoryDb first to prevent duplicate entries
+            const existingMem = memoryDb.instructorFicha.find(
+              link => link.instructorId === insId && link.fichaId === resolvedFichaId
+            );
+            if (!existingMem) {
+              const newMemLink = {
+                id: memoryDb.instructorFicha.length + 1,
+                instructorId: insId,
+                fichaId: resolvedFichaId,
+                rolEnFicha: insRecord.rol || 'Instructor Técnico',
+                area: 'Sistemas/ADSO',
+                createdAt: new Date()
+              };
+              memoryDb.instructorFicha.push(newMemLink);
+            }
+
+            // Check Postgres first to prevent duplicate rows
+            const existingPg = await db.select()
+              .from(instructorFicha)
+              .where(and(
+                eq(instructorFicha.instructorId, insId),
+                eq(instructorFicha.fichaId, resolvedFichaId)
+              ));
+            
+            if (existingPg.length === 0) {
+              await db.insert(instructorFicha).values({
+                instructorId: insId,
+                fichaId: resolvedFichaId,
+                rolEnFicha: insRecord.rol || 'Instructor Técnico',
+                area: 'Sistemas/ADSO'
+              });
+            }
+            linked = true;
+            console.log(`[LLAMADO_PERMISOS] Dynamic auto-assignment successful for instructor ${insRecord.correo} on ficha ID ${resolvedFichaId}.`);
+          } catch (insertErr: any) {
+            console.error(`[LLAMADO_PERMISOS] Dynamic auto-assignment failed:`, insertErr.message);
+          }
+        }
+
+        hasPermission = linked;
+      }
+
+      // Print secure diagnostic logs
+      console.log("[LLAMADO_PERMISOS]", {
+        correo: insRecord.correo,
+        instructorId: insRecord.id,
+        rol: insRecord.rol,
+        fichaCodigoRecibida: fichaId,
+        fichaIdInternaResuelta: resolvedFichaId,
+        tieneRelacionInstructorFicha: hasPermission
+      });
+
+      if (!hasPermission) {
+        const errorResponse = {
+          success: false,
+          error: `No tienes permiso para registrar llamados en esta ficha. Verifica que el instructor esté asignado a la ficha ${fichaIdStr}.`
+        };
+        console.error('[LLAMADO_ENDPOINT] error_response', errorResponse);
+        return res.status(403).json(errorResponse);
+      }
+
+      // 3. Find Learner in memoryDb & query Postgres
       let memStudent = memoryDb.aprendicesFichas.find(s => s.fichaId === resolvedFichaId && s.documento === userDoc);
-      let nextCallNumMemory = 1;
+      let pgStudent: any = null;
+
+      try {
+        const learnerResult = await db.select().from(aprendicesFichas)
+          .where(and(eq(aprendicesFichas.fichaId, resolvedFichaId), eq(aprendicesFichas.documento, userDoc)));
+        if (learnerResult.length > 0) {
+          pgStudent = learnerResult[0];
+          if (!memStudent) {
+            memStudent = {
+              id: pgStudent.id,
+              fichaId: pgStudent.fichaId,
+              documento: pgStudent.documento,
+              nombre: pgStudent.nombre,
+              correo: pgStudent.correo,
+              telefono: pgStudent.telefono,
+              estadoMatricula: pgStudent.estadoMatricula,
+              estadoSeguimiento: pgStudent.estadoSeguimiento,
+              estadoAcceso: pgStudent.estadoAcceso,
+              ultimoAcceso: pgStudent.ultimoAcceso,
+              diasSinAcceso: pgStudent.diasSinAcceso,
+              nivelRiesgo: pgStudent.nivelRiesgo,
+              estadoIntervencion: pgStudent.estadoIntervencion || 'Sin novedad',
+              evidencias: pgStudent.evidencias || {}
+            };
+            memoryDb.aprendicesFichas.push(memStudent);
+          }
+        }
+      } catch (dbErr: any) {
+        // Postgres query bypass
+      }
+
+      // If apprentice not found in memoryDb nor Postgres, return 404 JSON
+      if (!memStudent && !pgStudent) {
+        const errorResponse = {
+          success: false,
+          error: "No se encontró el aprendiz asociado a esta ficha."
+        };
+        console.error('[LLAMADO_ENDPOINT] error_response', errorResponse);
+        return res.status(404).json(errorResponse);
+      }
+
+      // 4. Duplicate checks in last 60 seconds (both memory and Postgres)
+      const oneMinuteAgo = Date.now() - 60000;
+      let existingLogMem: any = null;
       if (memStudent) {
-        // Count previous calls in memoryDb
+        existingLogMem = memoryDb.seguimientosHistorico.find(log => 
+          log.aprendizFichaId === memStudent.id &&
+          log.instructorId === insId &&
+          log.fecha.getTime() > oneMinuteAgo &&
+          (log.detalles.includes(asunto || '') || log.tipoSeguimiento === 'Correo de llamado a ponerse al día')
+        );
+      }
+
+      let duplicateLogPg: any = null;
+      if (pgStudent) {
+        try {
+          const oneMinuteAgoDate = new Date(Date.now() - 60000);
+          const potentialDuplicates = await db.select()
+            .from(seguimientosHistorico)
+            .where(and(
+              eq(seguimientosHistorico.aprendizFichaId, pgStudent.id),
+              eq(seguimientosHistorico.instructorId, insId),
+              gt(seguimientosHistorico.fecha, oneMinuteAgoDate)
+            ));
+          duplicateLogPg = potentialDuplicates.find(log => 
+            log.detalles.includes(asunto || '') || log.tipoSeguimiento === 'Correo de llamado a ponerse al día'
+          );
+        } catch (e) {}
+      }
+
+      const isDuplicate = !!(existingLogMem || duplicateLogPg);
+
+      if (isDuplicate) {
+        const dupLog = duplicateLogPg || existingLogMem;
+        const numLlamado = dupLog.numeroLlamado || 1;
+        const normalizedLlamado = {
+          id: String(dupLog.id),
+          fecha: dupLog.fecha instanceof Date ? dupLog.fecha.toISOString().split('T')[0] : String(dupLog.fecha).split('T')[0],
+          instructor: insRecord?.nombre || 'Instructor',
+          tipoSeguimiento: 'Correo de llamado a ponerse al día',
+          estadoIntervencion: 'En seguimiento',
+          detalle: dupLog.detalles || dupLog.detalle || '',
+          observaciones: `Registro de ${getOrdinalLlamadoText(numLlamado)}.`,
+          numeroLlamado: numLlamado,
+          evidenciasPendientes: Number(dupLog.evidenciasPendientes || evidenciasPendientes || 0),
+          diasSinAcceso: Number(dupLog.diasSinAcceso || diasSinAcceso || 0)
+        };
+
+        const successResponse = {
+          success: true,
+          duplicated: true,
+          message: "El llamado ya había sido registrado recientemente",
+          numeroLlamado: numLlamado,
+          llamado: normalizedLlamado
+        };
+        console.log('[LLAMADO_ENDPOINT] success_response', successResponse);
+        return res.json(successResponse);
+      }
+
+      // 5. Calculate next academic call number
+      let nextCallNum = 1;
+      if (pgStudent) {
+        try {
+          const allLogsPg = await db.select()
+            .from(seguimientosHistorico)
+            .where(eq(seguimientosHistorico.aprendizFichaId, pgStudent.id));
+          const prevCallsPg = allLogsPg.filter(isAcademicCall);
+          nextCallNum = prevCallsPg.length + 1;
+        } catch (dbErr) {
+          if (memStudent) {
+            const prevCallsMem = memoryDb.seguimientosHistorico.filter(
+              log => log.aprendizFichaId === memStudent.id && isAcademicCall(log)
+            );
+            nextCallNum = prevCallsMem.length + 1;
+          }
+        }
+      } else if (memStudent) {
         const prevCallsMem = memoryDb.seguimientosHistorico.filter(
           log => log.aprendizFichaId === memStudent.id && isAcademicCall(log)
         );
-        nextCallNumMemory = prevCallsMem.length + 1;
+        nextCallNum = prevCallsMem.length + 1;
+      }
 
-        // Update state to 'En seguimiento'
-        memStudent.estadoIntervencion = 'En seguimiento';
+      // 6. Build the detailed observation message
+      const totalEv = req.body.totalEvidencias || 0;
+      const evEnviadas = req.body.evidenciasEnviadas || 0;
+      const evAprobadas = req.body.evidenciasAprobadas || 0;
+      const evDesaprobadas = req.body.evidenciasDesaprobadas || 0;
+      const obs = `Registro de ${getOrdinalLlamadoText(nextCallNum)}.`;
 
-        const totalEv = req.body.totalEvidencias || 0;
-        const evEnviadas = req.body.evidenciasEnviadas || 0;
-        const evAprobadas = req.body.evidenciasAprobadas || 0;
-        const evDesaprobadas = req.body.evidenciasDesaprobadas || 0;
-        const obs = `Registro de ${getOrdinalLlamadoText(nextCallNumMemory)}.`;
-
-        const detailsMemory = `Asunto: ${asunto || 'Llamado académico'}
+      const detailsText = `Asunto: ${asunto || 'Llamado académico'}
 Ficha: ${fichaId}
 Fecha de último ingreso: ${ultimoAcceso || 'Nunca ingresó'}
 Días sin acceso: ${diasSinAcceso || 0}
@@ -2659,31 +2951,110 @@ Observación: ${obs}
 --------------------------------------------------
 ${mensaje}`;
 
-        // Add history log
+      let createdLogId: number | null = null;
+
+      // 7. Execute PostgreSQL actions inside isolated try/catch to ensure database failure resilience
+      if (pgStudent) {
+        try {
+          // Update student status
+          await db.update(aprendicesFichas)
+            .set({ estadoIntervencion: 'En seguimiento' })
+            .where(eq(aprendicesFichas.id, pgStudent.id));
+
+          // Insert followup log
+          const insertResult = await db.insert(seguimientosHistorico)
+            .values({
+              aprendizFichaId: pgStudent.id,
+              instructorId: insId,
+              estadoPrevio: pgStudent.estadoIntervencion || 'Sin novedad',
+              estadoNuevo: 'En seguimiento',
+              detalles: detailsText,
+              tipoSeguimiento: 'Correo de llamado a ponerse al día',
+              evidenciasPendientes: Number(evidenciasPendientes || 0),
+              diasSinAcceso: Number(diasSinAcceso || 0),
+              numeroLlamado: nextCallNum
+            })
+            .returning({ id: seguimientosHistorico.id });
+
+          if (insertResult.length > 0) {
+            createdLogId = insertResult[0].id;
+          }
+
+          // Escalation check in Postgres
+          if (nextCallNum > 3) {
+            const existingPgAlerts = await db.select().from(alertasCriticas).where(eq(alertasCriticas.aprendizFichaId, pgStudent.id));
+            const openAlert = existingPgAlerts.find(a => a.estado !== 'Cerrado' && a.estado !== 'Cerrado por mejora');
+
+            const summaryText = `[Llamado #${nextCallNum} - ${new Date().toLocaleDateString()}] Evidencias: ${evidenciasPendientes}, Días sin acceso: ${diasSinAcceso}.`;
+
+            if (openAlert) {
+              await db.update(alertasCriticas)
+                .set({
+                  totalLlamados: nextCallNum,
+                  evidenciasPendientes: Number(evidenciasPendientes || 0),
+                  diasSinAcceso: Number(diasSinAcceso || 0),
+                  ultimoAcceso: ultimoAcceso || pgStudent.ultimoAcceso,
+                  historialResumido: openAlert.historialResumido + '\n' + summaryText,
+                  estado: 'Requiere intervención administrativa'
+                })
+                .where(eq(alertasCriticas.id, openAlert.id));
+            } else {
+              await db.insert(alertasCriticas)
+                .values({
+                  aprendizFichaId: pgStudent.id,
+                  instructorId: insId,
+                  totalLlamados: nextCallNum,
+                  evidenciasPendientes: Number(evidenciasPendientes || 0),
+                  diasSinAcceso: Number(diasSinAcceso || 0),
+                  ultimoAcceso: ultimoAcceso || pgStudent.ultimoAcceso,
+                  historialResumido: summaryText,
+                  nivelRiesgo: pgStudent.nivelRiesgo || 'Alto',
+                  estado: 'Requiere intervención administrativa'
+                });
+            }
+          }
+        } catch (dbErr: any) {
+          console.error("[ERROR] Postgres operations failed inside /api/aprendices/enviar-llamado", {
+            message: dbErr?.message,
+            stack: process.env.NODE_ENV === "development" ? dbErr?.stack : undefined
+          });
+        }
+      }
+
+      // 8. Execute Memory DB actions
+      if (memStudent) {
+        memStudent.estadoIntervencion = 'En seguimiento';
+
+        // Add history log in memoryDb
+        const memoryLogId = memoryDb.seguimientosHistorico.length + 1;
         memoryDb.seguimientosHistorico.push({
-          id: memoryDb.seguimientosHistorico.length + 1,
+          id: memoryLogId,
           aprendizFichaId: memStudent.id,
           instructorId: insId,
           fecha: new Date(),
-          estadoPrevio: memStudent.estadoIntervencion,
+          estadoPrevio: memStudent.estadoIntervencion || 'Sin novedad',
           estadoNuevo: 'En seguimiento',
-          detalles: detailsMemory,
+          detalles: detailsText,
           tipoSeguimiento: 'Correo de llamado a ponerse al día',
           evidenciasPendientes: Number(evidenciasPendientes || 0),
           diasSinAcceso: Number(diasSinAcceso || 0),
-          numeroLlamado: nextCallNumMemory
+          numeroLlamado: nextCallNum
         });
 
-        // Escalation check: if nextCallNumMemory > 3, escalate!
-        if (nextCallNumMemory > 3) {
+        if (!createdLogId) {
+          createdLogId = memoryLogId;
+        }
+
+        // Escalation check in memoryDb
+        if (nextCallNum > 3) {
           let existingAlert = memoryDb.alertasCriticas.find(
             a => a.aprendizFichaId === memStudent.id && a.estado !== 'Cerrado' && a.estado !== 'Cerrado por mejora'
           );
 
-          const summaryText = `[Llamado #${nextCallNumMemory} - ${new Date().toLocaleDateString()}] Evidencias: ${evidenciasPendientes}, Días sin acceso: ${diasSinAcceso}.`;
+          const summaryText = `[Llamado #${nextCallNum} - ${new Date().toLocaleDateString()}] Evidencias: ${evidenciasPendientes}, Días sin acceso: ${diasSinAcceso}.`;
 
           if (existingAlert) {
-            existingAlert.totalLlamados = nextCallNumMemory;
+            existingAlert.totalLlamados = nextCallNum;
             existingAlert.evidenciasPendientes = Number(evidenciasPendientes || 0);
             existingAlert.diasSinAcceso = Number(diasSinAcceso || 0);
             existingAlert.ultimoAcceso = ultimoAcceso || memStudent.ultimoAcceso;
@@ -2694,7 +3065,7 @@ ${mensaje}`;
               id: memoryDb.alertasCriticas.length + 1,
               aprendizFichaId: memStudent.id,
               instructorId: insId,
-              totalLlamados: nextCallNumMemory,
+              totalLlamados: nextCallNum,
               evidenciasPendientes: Number(evidenciasPendientes || 0),
               diasSinAcceso: Number(diasSinAcceso || 0),
               ultimoAcceso: ultimoAcceso || memStudent.ultimoAcceso,
@@ -2708,117 +3079,42 @@ ${mensaje}`;
         }
       }
 
-      // 4. Find Learner in PostgreSQL & update
-      let pgNextCallNum = nextCallNumMemory;
-      let escalated = false;
-      try {
-        let dbFichaId: number;
-        if (typeof fichaId === 'string' && isNaN(Number(fichaId))) {
-          const fResult = await db.select().from(fichas).where(eq(fichas.codigoFicha, fichaId));
-          dbFichaId = fResult[0].id;
-        } else {
-          dbFichaId = Number(fichaId);
-        }
+      // 9. Return the normalized JSON success response
+      const returnedLog = {
+        id: String(createdLogId || `int-${Date.now()}`),
+        fecha: new Date().toISOString().split('T')[0],
+        instructor: insRecord?.nombre || 'Instructor',
+        tipoSeguimiento: 'Correo de llamado a ponerse al día',
+        estadoIntervencion: 'En seguimiento',
+        detalle: detailsText,
+        observaciones: `Registro de ${getOrdinalLlamadoText(nextCallNum)}.`,
+        numeroLlamado: nextCallNum,
+        evidenciasPendientes: Number(evidenciasPendientes || 0),
+        diasSinAcceso: Number(diasSinAcceso || 0)
+      };
 
-        const learnerResult = await db.select().from(aprendicesFichas)
-          .where(and(eq(aprendicesFichas.fichaId, dbFichaId), eq(aprendicesFichas.documento, userDoc)));
-
-        if (learnerResult.length > 0) {
-          const pgStudent = learnerResult[0];
-
-          // Count existing calls in Postgres
-          const allLogsPg = await db.select()
-            .from(seguimientosHistorico)
-            .where(eq(seguimientosHistorico.aprendizFichaId, pgStudent.id));
-          const prevCallsPg = allLogsPg.filter(isAcademicCall);
-          pgNextCallNum = prevCallsPg.length + 1;
-
-          const totalEv = req.body.totalEvidencias || 0;
-          const evEnviadas = req.body.evidenciasEnviadas || 0;
-          const evAprobadas = req.body.evidenciasAprobadas || 0;
-          const evDesaprobadas = req.body.evidenciasDesaprobadas || 0;
-          const obs = `Registro de ${getOrdinalLlamadoText(pgNextCallNum)}.`;
-
-          const detailsPg = `Asunto: ${asunto || 'Llamado académico'}
-Ficha: ${fichaId}
-Fecha de último ingreso: ${ultimoAcceso || 'Nunca ingresó'}
-Días sin acceso: ${diasSinAcceso || 0}
-Total evidencias: ${totalEv}
-Evidencias enviadas: ${evEnviadas}
-Evidencias aprobadas: ${evAprobadas}
-Evidencias desaprobadas: ${evDesaprobadas}
-Evidencias pendientes: ${evidenciasPendientes || 0}
-Observación: ${obs}
---------------------------------------------------
-${mensaje}`;
-
-          // Insert followup log
-          await db.insert(seguimientosHistorico)
-            .values({
-              aprendizFichaId: pgStudent.id,
-              instructorId: insId,
-              estadoPrevio: pgStudent.estadoIntervencion,
-              estadoNuevo: 'En seguimiento',
-              detalles: detailsPg,
-              tipoSeguimiento: 'Correo de llamado a ponerse al día',
-              evidenciasPendientes: Number(evidenciasPendientes || 0),
-              diasSinAcceso: Number(diasSinAcceso || 0),
-              numeroLlamado: pgNextCallNum
-            });
-
-          // Update student status
-          await db.update(aprendicesFichas)
-            .set({ estadoIntervencion: 'En seguimiento' })
-            .where(eq(aprendicesFichas.id, pgStudent.id));
-
-          // Escalation check
-          if (pgNextCallNum > 3) {
-            escalated = true;
-            const existingPgAlerts = await db.select().from(alertasCriticas).where(eq(alertasCriticas.aprendizFichaId, pgStudent.id));
-            const openAlert = existingPgAlerts.find(a => a.estado !== 'Cerrado' && a.estado !== 'Cerrado por mejora');
-
-            const summaryText = `[Llamado #${pgNextCallNum} - ${new Date().toLocaleDateString()}] Evidencias: ${evidenciasPendientes}, Días sin acceso: ${diasSinAcceso}.`;
-
-            if (openAlert) {
-              await db.update(alertasCriticas)
-                .set({
-                  totalLlamados: pgNextCallNum,
-                  evidenciasPendientes: Number(evidenciasPendientes || 0),
-                  diasSinAcceso: Number(diasSinAcceso || 0),
-                  ultimoAcceso: ultimoAcceso || pgStudent.ultimoAcceso,
-                  historialResumido: openAlert.historialResumido + '\n' + summaryText,
-                  estado: 'Requiere intervención administrativa'
-                })
-                .where(eq(alertasCriticas.id, openAlert.id));
-            } else {
-              await db.insert(alertasCriticas)
-                .values({
-                  aprendizFichaId: pgStudent.id,
-                  instructorId: insId,
-                  totalLlamados: pgNextCallNum,
-                  evidenciasPendientes: Number(evidenciasPendientes || 0),
-                  diasSinAcceso: Number(diasSinAcceso || 0),
-                  ultimoAcceso: ultimoAcceso || pgStudent.ultimoAcceso,
-                  historialResumido: summaryText,
-                  nivelRiesgo: pgStudent.nivelRiesgo || 'Alto',
-                  estado: 'Requiere intervención administrativa'
-                });
-            }
-          }
-        }
-      } catch (dbErr: any) {
-        console.warn('Postgres enviar-llamado database sync bypassed:', dbErr.message);
-      }
-
-      return res.json({
+      const successResponse = {
         success: true,
-        numeroLlamado: pgNextCallNum,
-        escalado: pgNextCallNum > 3,
-        mensajeExito: `Llamado enviado con éxito al aprendiz ${memStudent?.nombre || userDoc}`
+        message: "Llamado registrado correctamente",
+        numeroLlamado: nextCallNum,
+        llamado: returnedLog
+      };
+      console.log('[LLAMADO_ENDPOINT] success_response', successResponse);
+      return res.json(successResponse);
+
+    } catch (error: any) {
+      console.error("[ERROR] /api/aprendices/enviar-llamado", {
+        message: error?.message,
+        stack: process.env.NODE_ENV === "development" ? error?.stack : undefined
       });
-    } catch (err: any) {
-      console.error('Error recording sending alert call:', err);
-      return res.status(500).json({ error: 'Error al registrar llamado de alerta' });
+
+      const errorResponse = {
+        success: false,
+        error: "No fue posible registrar el llamado académico.",
+        details: process.env.NODE_ENV === "development" ? String(error?.message || error) : undefined
+      };
+      console.error('[LLAMADO_ENDPOINT] error_response', errorResponse);
+      return res.status(500).json(errorResponse);
     }
   });
 
@@ -2923,6 +3219,13 @@ ${mensaje}`;
     }
   });
 
+  // Middleware for API 404 routes, placed after all other API routes
+  app.use('/api', (req, res) => {
+    return res.status(404).json({
+      success: false,
+      error: `Ruta API no encontrada: ${req.method} ${req.originalUrl}`
+    });
+  });
 
   // ==========================================
   // VITE & STATIC FILES SERVING

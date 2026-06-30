@@ -5,7 +5,7 @@ import UploadSection from './components/UploadSection';
 import AdminSection from './components/AdminSection';
 import FichasTable from './components/FichasTable';
 import DashboardPage from './pages/DashboardPage';
-import { signInWithPopup, signInWithRedirect, getRedirectResult, signOut, onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
+import { signInWithPopup, signInWithRedirect, getRedirectResult, signOut, onIdTokenChanged, User as FirebaseUser } from 'firebase/auth';
 import { auth, googleAuthProvider, isFirebaseConfigured } from './lib/firebase.ts';
 import { 
   syncInstructor, 
@@ -153,7 +153,7 @@ export default function App() {
 
     checkRedirectResult();
 
-    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+    const unsubscribe = onIdTokenChanged(auth, async (user) => {
       if (user) {
         setCurrentUser(user);
         console.log('[DEV LOG] email autenticado:', user.email);
@@ -236,9 +236,18 @@ export default function App() {
 
   // Refresh saved fichas list helper
   const reloadFichas = async () => {
-    if (!authToken) return;
+    let token = authToken;
+    if (auth.currentUser) {
+      try {
+        token = await auth.currentUser.getIdToken();
+        setAuthToken(token);
+      } catch (e) {
+        console.warn('Could not refresh token for reloading fichas:', e);
+      }
+    }
+    if (!token) return;
     try {
-      const data = await fetchFichas(authToken);
+      const data = await fetchFichas(token);
       setSavedFichas(data);
     } catch (err) {
       console.error('Error reloading saved cohort list:', err);
@@ -335,14 +344,23 @@ export default function App() {
   // Modify active profile role with admin password check
   const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!authToken) return;
+    let token = authToken;
+    if (auth.currentUser) {
+      try {
+        token = await auth.currentUser.getIdToken();
+        setAuthToken(token);
+      } catch (e) {
+        console.warn('Could not refresh token for saving profile:', e);
+      }
+    }
+    if (!token) return;
     try {
-      const updated = await updateInstructorRole(authToken, tempRol, tempNombre, adminKey);
+      const updated = await updateInstructorRole(token, tempRol, tempNombre, adminKey);
       setInstructorProfile(updated);
       setIsEditingProfile(false);
       setAdminKey(''); // Reset passcode
       // Reload fichas catalogue instantly to adjust scoping (e.g. admins see all, instructors see assigned)
-      const data = await fetchFichas(authToken);
+      const data = await fetchFichas(token);
       setSavedFichas(data);
     } catch (err: any) {
       alert(err.message || 'No se pudo guardar la información del rol.');

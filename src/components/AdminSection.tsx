@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { auth } from '../lib/firebase.ts';
 import { 
   FileSpreadsheet, 
   UploadCloud, 
@@ -104,6 +105,19 @@ export default function AdminSection({
   savedFichas = [],
   onSelectFicha
 }: AdminSectionProps) {
+
+  const getFreshToken = async (): Promise<string> => {
+    try {
+      if (auth && auth.currentUser) {
+        const fresh = await auth.currentUser.getIdToken();
+        if (fresh) return fresh;
+      }
+    } catch (e) {
+      console.warn('Could not refresh Firebase token directly in AdminSection:', e);
+    }
+    return authToken;
+  };
+
   const [internalActiveTab, setInternalActiveTab] = useState<'programacion' | 'aprendices_masivo' | 'alertas_criticas'>('programacion');
 
   const activeTab = externalActiveTab !== undefined ? externalActiveTab : internalActiveTab;
@@ -158,9 +172,10 @@ export default function AdminSection({
     setIsPreppingDelete(true);
     setDeleteTargetInstructor(ins);
     try {
+      const activeToken = await getFreshToken();
       const res = await fetch(`/api/administrativo/instructores/${ins.id}/prepare-delete`, {
         headers: {
-          'Authorization': `Bearer ${authToken}`
+          'Authorization': `Bearer ${activeToken}`
         }
       });
       if (res.ok) {
@@ -221,10 +236,11 @@ export default function AdminSection({
 
     setIsDeletingInProgress(true);
     try {
+      const activeToken = await getFreshToken();
       const res = await fetch('/api/administrativo/instructores/delete-or-inactivate', {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${authToken}`,
+          'Authorization': `Bearer ${activeToken}`,
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
@@ -265,7 +281,8 @@ export default function AdminSection({
 
     setIsResetting(true);
     try {
-      const res = await resetSystemDatabase(authToken);
+      const activeToken = await getFreshToken();
+      const res = await resetSystemDatabase(activeToken);
       alert(res.message || 'El sistema ha sido limpiado correctamente.');
       onSuccessSync(); // Reload the fichas list!
     } catch (err: any) {
@@ -304,10 +321,11 @@ export default function AdminSection({
     }
     setIsSavingPass(true);
     try {
+      const activeToken = await getFreshToken();
       const res = await fetch('/api/administrativo/instructor-password', {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${authToken}`,
+          'Authorization': `Bearer ${activeToken}`,
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({ 
@@ -543,7 +561,8 @@ export default function AdminSection({
     setLoading(true);
     setSyncStatus(null);
     try {
-      const res = await uploadProgrammingGrid(authToken, parsedRows);
+      const activeToken = await getFreshToken();
+      const res = await uploadProgrammingGrid(activeToken, parsedRows);
       if (res && res.success) {
         let successCount = 0;
         let errorCount = 0;
@@ -716,8 +735,9 @@ export default function AdminSection({
         const result = parseReporteAprendicesExcel(rows2D);
 
         // Sync to Cloud SQL via API Route
+        const activeToken = await getFreshToken();
         const syncResponse = await syncLearnersToDb(
-          authToken,
+          activeToken,
           item.fichaCodigo,
           item.programaFormacion,
           item.nivel,
@@ -2088,13 +2108,26 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
   const [observacion, setObservacion] = useState<string>('');
   const [saving, setSaving] = useState(false);
 
+  const getFreshToken = async (): Promise<string> => {
+    try {
+      if (auth && auth.currentUser) {
+        const fresh = await auth.currentUser.getIdToken();
+        if (fresh) return fresh;
+      }
+    } catch (e) {
+      console.warn('Could not refresh Firebase token directly in AlertasCriticasSection:', e);
+    }
+    return authToken;
+  };
+
   const fetchAlertas = async () => {
     setLoading(true);
     setError(null);
     try {
+      const activeToken = await getFreshToken();
       const res = await fetch('/api/administrativo/alertas-criticas', {
         headers: {
-          'Authorization': `Bearer ${authToken}`
+          'Authorization': `Bearer ${activeToken}`
         }
       });
       if (!res.ok) {
@@ -2125,11 +2158,12 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
     if (!selectedAlerta) return;
     setSaving(true);
     try {
+      const activeToken = await getFreshToken();
       const res = await fetch(`/api/administrativo/alertas-criticas/${selectedAlerta.id}/estado`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${authToken}`
+          'Authorization': `Bearer ${activeToken}`
         },
         body: JSON.stringify({
           estadoAlerta: nuevoEstado,

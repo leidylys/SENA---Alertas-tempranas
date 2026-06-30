@@ -12,6 +12,7 @@ import AlertTable from '../components/AlertTable';
 import StrategyModal from '../components/StrategyModal';
 import ReportModal from '../components/ReportModal';
 import { useAlertasStore } from '../hooks/useAlertasStore';
+import { auth } from '../lib/firebase.ts';
 import { saveIndividualIntervention, saveBulkIntervention, syncLearnersToDb } from '../lib/api.ts';
 import { leerArchivoExcel, leerArchivoExcel2D, detectarFases, normalizarAprendices, combinarDatos, detectExcelReportType, parseReporteAprendicesExcel } from '../utils/excelParser';
 import { procesarTodosLosAprendices } from '../utils/riskCalculator';
@@ -63,6 +64,18 @@ export default function DashboardPage({
   isAdmin = false
 }: DashboardPageProps) {
   
+  const getFreshToken = async (): Promise<string> => {
+    try {
+      if (auth && auth.currentUser) {
+        const fresh = await auth.currentUser.getIdToken();
+        if (fresh) return fresh;
+      }
+    } catch (e) {
+      console.warn('Could not refresh Firebase token directly:', e);
+    }
+    return authToken;
+  };
+
   // Modals state
   const [isReportOpen, setIsReportOpen] = useState(false);
   const [isStrategyOpen, setIsStrategyOpen] = useState(false);
@@ -76,6 +89,7 @@ export default function DashboardPage({
   const [emailCuerpo, setEmailCuerpo] = useState('');
   const [isSendingLlamado, setIsSendingLlamado] = useState(false);
   const [llamadoSuccessMessage, setLlamadoSuccessMessage] = useState('');
+  const [llamadoError, setLlamadoError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   
   // Strategy targets (either singular learner or mass block)
@@ -282,13 +296,16 @@ Servicio Nacional de Aprendizaje (SENA)`;
     setEmailAsunto(asunto);
     setEmailCuerpo(cuerpo);
     setLlamadoSuccessMessage('');
+    setLlamadoError(null);
     setIsLlamadoOpen(true);
   };
 
   const handleEnviarLlamadoConfirmado = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedAprendizLlamado) return;
+    if (isSendingLlamado) return;
     setIsSendingLlamado(true);
+    setLlamadoError(null);
 
     const getACountLocal = (learner: Aprendiz) => {
       if (!learner || !learner.evidencias) return 0;
@@ -318,19 +335,29 @@ Servicio Nacional de Aprendizaje (SENA)`;
     const pendingCount = totalEv - evAprobadas;
     const nextCallNum = (selectedAprendizLlamado.historialIntervenciones || []).filter(isAcademicCall).length + 1;
 
+    const safeBase64Encode = (str: string) => {
+      try {
+        return btoa(unescape(encodeURIComponent(str)));
+      } catch (e) {
+        return btoa(str);
+      }
+    };
+
     try {
+      const activeToken = await getFreshToken();
       const response = await fetch('/api/aprendices/enviar-llamado', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${authToken}`
+          'Authorization': `Bearer ${activeToken}`
         },
         body: JSON.stringify({
           userDoc: selectedAprendizLlamado.documento,
           fichaId: fichaInfo.numeroFicha,
           asunto: emailAsunto,
           correo: emailDestinatario,
-          mensaje: emailCuerpo,
+          mensaje: safeBase64Encode(emailCuerpo),
+          isBase64: true,
           evidenciasPendientes: pendingCount,
           diasSinAcceso: selectedAprendizLlamado.diasSinAcceso || 0,
           ultimoAcceso: selectedAprendizLlamado.ultimoAcceso,
@@ -343,7 +370,35 @@ Servicio Nacional de Aprendizaje (SENA)`;
         })
       });
 
-      const result = await response.json();
+      const contentType = response.headers.get("content-type") || "";
+      const rawText = await response.text();
+
+      console.log('[LLAMADO_DEBUG_FRONTEND]', {
+        status: response.status,
+        statusText: response.statusText,
+        contentType,
+        rawPreview: rawText.slice(0, 500)
+      });
+
+      let result: any;
+      try {
+        result = contentType.includes("application/json")
+          ? JSON.parse(rawText)
+          : { success: false, error: `Respuesta del servidor no válida. Status: ${response.status}. Tipo de respuesta: ${contentType}.` };
+      } catch {
+        result = { success: false, error: `Error de análisis JSON. Status: ${response.status}. Tipo de respuesta: ${contentType}.` };
+      }
+
+      if (response.status === 403) {
+        setLlamadoError("No tienes permiso para registrar llamados en esta ficha. Verifica la asignación del instructor.");
+        return;
+      }
+
+      if (!contentType.includes("application/json") && rawText.includes("<html")) {
+        setLlamadoError(`Error al registrar llamado. Status: ${response.status}. Tipo de respuesta: ${contentType}. El servidor devolvió una respuesta HTML en lugar de JSON.`);
+        return;
+      }
+
       if (response.ok && result.success) {
         const actualCallNum = result.numeroLlamado || nextCallNum;
         const ordinalLabel = getOrdinalLlamadoText(actualCallNum);
@@ -363,33 +418,35 @@ Observación: ${obs}
 ${emailCuerpo}`;
 
         // Update local state in the store so the list is reactive and doesn't require a hard page reload!
+        const returnedLlamado = result.llamado || {
+          fecha: new Date().toLocaleDateString('es-CO'),
+          instructor: fichaInfo.instructor,
+          estadoIntervencion: 'En seguimiento',
+          tipoSeguimiento: 'Correo de llamado a ponerse al día',
+          evidenciasPendientes: pendingCount,
+          diasSinAcceso: selectedAprendizLlamado.diasSinAcceso || 0,
+          numeroLlamado: actualCallNum,
+          detalle: detailsText,
+          observaciones: `Registro de ${ordinalLabel}.`
+        };
+
         store.aplicarIntervencionIndividual(
           selectedAprendizLlamado.documento,
           'En seguimiento',
-          {
-            fecha: new Date().toLocaleDateString('es-CO'),
-            instructor: fichaInfo.instructor,
-            estadoIntervencion: 'En seguimiento',
-            tipoSeguimiento: 'Correo de llamado a ponerse al día',
-            evidenciasPendientes: pendingCount,
-            diasSinAcceso: selectedAprendizLlamado.diasSinAcceso || 0,
-            numeroLlamado: actualCallNum,
-            detalle: detailsText,
-            observaciones: `Registro de ${ordinalLabel}.`
-          }
+          returnedLlamado
         );
 
         setLlamadoSuccessMessage(`¡${ordinalLabel} registrado con éxito! El estado del aprendiz se actualizó a "En seguimiento".`);
         setTimeout(() => {
           setIsLlamadoOpen(false);
           setSelectedAprendizLlamado(null);
-        }, 3000);
+        }, 2000);
       } else {
-        alert(result.error || 'Error al registrar el llamado de atención');
+        setLlamadoError(result.error || 'Error al registrar el llamado de atención');
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error sending llamado:', err);
-      alert('Hubo un error al comunicarse con el servidor.');
+      setLlamadoError(err.message || 'Hubo un error al comunicarse con el servidor.');
     } finally {
       setIsSendingLlamado(false);
     }
@@ -428,10 +485,11 @@ ${emailCuerpo}`;
       }
 
       const todayISO = new Date().toISOString().split('T')[0];
+      const activeToken = await getFreshToken();
 
       // Update DB and Memory fallback
       const response = await syncLearnersToDb(
-        authToken,
+        activeToken,
         fichaInfo.numeroFicha,
         fichaInfo.programaFormacion,
         fichaInfo.nivel,
@@ -681,8 +739,9 @@ ${emailCuerpo}`;
       });
 
       // Update database and memory
+      const activeToken = await getFreshToken();
       const response = await syncLearnersToDb(
-        authToken,
+        activeToken,
         fichaInfo.numeroFicha,
         fichaInfo.programaFormacion,
         fichaInfo.nivel,
@@ -765,10 +824,12 @@ ${emailCuerpo}`;
         intervencionDetalle.observaciones ? `Observaciones: ${intervencionDetalle.observaciones}` : ''
       ].filter(Boolean).join(' | ') || 'Asignación de estrategia pedagógica';
 
+      const activeToken = await getFreshToken();
+
       if (strategyMassTarget) {
         // Bulk save
         await saveBulkIntervention(
-          authToken,
+          activeToken,
           documentos,
           fichaInfo.numeroFicha,
           estado,
@@ -779,7 +840,7 @@ ${emailCuerpo}`;
       } else {
         // Individual save
         await saveIndividualIntervention(
-          authToken,
+          activeToken,
           documentos[0],
           fichaInfo.numeroFicha,
           estado,
@@ -1454,6 +1515,15 @@ ${emailCuerpo}`;
               <form onSubmit={handleEnviarLlamadoConfirmado} className="flex-1 flex flex-col overflow-hidden">
                 {/* Scrollable Form Body */}
                 <div className="p-5 space-y-4 overflow-y-auto text-left">
+                  {llamadoError && (
+                    <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-xl text-xs font-semibold flex items-start gap-2">
+                      <AlertTriangle className="w-4 h-4 text-red-500 shrink-0 mt-0.5" />
+                      <div>
+                        <p className="font-bold">No se pudo registrar el llamado:</p>
+                        <p className="mt-0.5 text-red-650">{llamadoError}</p>
+                      </div>
+                    </div>
+                  )}
                   
                   {/* Detailed Student Bento Profile Card */}
                   {(() => {

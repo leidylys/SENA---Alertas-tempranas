@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { auth } from '../lib/firebase.ts';
 import { 
   Table, 
   ArrowUpDown, 
@@ -58,6 +59,19 @@ export default function FichasTable({
   authToken,
   isUserAdmin
 }: FichasTableProps) {
+
+  const getFreshToken = async (): Promise<string> => {
+    try {
+      if (auth && auth.currentUser) {
+        const fresh = await auth.currentUser.getIdToken();
+        if (fresh) return fresh;
+      }
+    } catch (e) {
+      console.warn('Could not refresh Firebase token directly:', e);
+    }
+    return authToken;
+  };
+
   // Filters & State
   const [searchQuery, setSearchQuery] = useState('');
   const [instructorSearch, setInstructorSearch] = useState('');
@@ -127,11 +141,12 @@ export default function FichasTable({
     setEditError(null);
 
     try {
+      const activeToken = await getFreshToken();
       const res = await fetch(`/api/fichas/${editingFicha.id}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${authToken}`
+          'Authorization': `Bearer ${activeToken}`
         },
         body: JSON.stringify({
           codigoFicha: editingCodigo,
@@ -161,10 +176,11 @@ export default function FichasTable({
     setIsDeleting(true);
 
     try {
+      const activeToken = await getFreshToken();
       const res = await fetch(`/api/fichas/${id}`, {
         method: 'DELETE',
         headers: {
-          'Authorization': `Bearer ${authToken}`
+          'Authorization': `Bearer ${activeToken}`
         }
       });
 
