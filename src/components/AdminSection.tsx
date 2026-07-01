@@ -27,10 +27,7 @@ import {
   Users,
   ChevronLeft,
   ChevronRight,
-  X,
-  UserCheck,
-  ArrowRight,
-  AlertCircle
+  X
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { 
@@ -42,11 +39,9 @@ import {
   normalizarAprendices,
   combinarDatos,
   parseReporteAprendicesExcel,
-  detectExcelReportType,
-  parseItinerarioExcel,
-  normalizePrograma
+  detectExcelReportType
 } from '../utils/excelParser';
-import { uploadProgrammingGrid, syncLearnersToDb, resetSystemDatabase, uploadItinerary } from '../lib/api';
+import { uploadProgrammingGrid, syncLearnersToDb, resetSystemDatabase } from '../lib/api';
 import { procesarTodosLosAprendices } from '../utils/riskCalculator';
 
 export function formatInstructorNombre(nombre: string, correo?: string): string {
@@ -96,8 +91,8 @@ interface BatchFileItem {
 interface AdminSectionProps {
   authToken: string;
   onSuccessSync: () => void;
-  activeTab?: 'programacion' | 'aprendices_masivo' | 'alertas_criticas' | 'itinerario';
-  onChangeTab?: (tab: 'programacion' | 'aprendices_masivo' | 'alertas_criticas' | 'itinerario') => void;
+  activeTab?: 'programacion' | 'aprendices_masivo' | 'alertas_criticas';
+  onChangeTab?: (tab: 'programacion' | 'aprendices_masivo' | 'alertas_criticas') => void;
   savedFichas?: any[];
   onSelectFicha?: (codigoFicha: string) => void;
 }
@@ -123,7 +118,7 @@ export default function AdminSection({
     return authToken;
   };
 
-  const [internalActiveTab, setInternalActiveTab] = useState<'programacion' | 'aprendices_masivo' | 'alertas_criticas' | 'itinerario'>('programacion');
+  const [internalActiveTab, setInternalActiveTab] = useState<'programacion' | 'aprendices_masivo' | 'alertas_criticas'>('programacion');
 
   const activeTab = externalActiveTab !== undefined ? externalActiveTab : internalActiveTab;
   const setActiveTab = externalOnChangeTab !== undefined ? externalOnChangeTab : setInternalActiveTab;
@@ -171,188 +166,6 @@ export default function AdminSection({
   const [deleteReassignments, setDeleteReassignments] = useState<{ [key: string]: number | null }>({});
   const [isDeletingInProgress, setIsDeletingInProgress] = useState(false);
   const [isPreppingDelete, setIsPreppingDelete] = useState(false);
-
-  // Itinerary upload states
-  const [itineraryFichaCodigo, setItineraryFichaCodigo] = useState('');
-  const [itineraryLeaderId, setItineraryLeaderId] = useState<number | null>(null);
-  const [itineraryFile, setItineraryFile] = useState<File | null>(null);
-  const [itineraryRows, setItineraryRows] = useState<any[]>([]);
-  const [itineraryLoading, setItineraryLoading] = useState(false);
-  const [itineraryPreview, setItineraryPreview] = useState<any[] | null>(null);
-  const [itineraryResult, setItineraryResult] = useState<any | null>(null);
-  const [itineraryError, setItineraryError] = useState<string | null>(null);
-
-  // Pending instructors management
-  const [pendingInstructors, setPendingInstructors] = useState<any[]>([]);
-  const [loadingPending, setLoadingPending] = useState(false);
-  const [selectedPendingName, setSelectedPendingName] = useState<string | null>(null);
-  const [associateMode, setAssociateMode] = useState<'create' | 'associate'>('associate');
-  const [selectedExistingId, setSelectedExistingId] = useState<string>('');
-  const [newInstName, setNewInstName] = useState('');
-  const [newInstEmail, setNewInstEmail] = useState('');
-  const [newInstRol, setNewInstRol] = useState('Instructor Técnico');
-  const [newInstEstado, setNewInstEstado] = useState('Activo');
-  const [submittingAssociation, setSubmittingAssociation] = useState(false);
-  const [associationError, setAssociationError] = useState<string | null>(null);
-  const [associationSuccess, setAssociationSuccess] = useState<string | null>(null);
-
-  const loadPendingInstructors = async () => {
-    try {
-      setLoadingPending(true);
-      const activeToken = await getFreshToken();
-      const res = await fetch('/api/administrativo/itinerario/por-asignar', {
-        headers: {
-          'Authorization': `Bearer ${activeToken}`
-        }
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setPendingInstructors(data);
-      }
-    } catch (err) {
-      console.error('Error fetching pending instructors:', err);
-    } finally {
-      setLoadingPending(false);
-    }
-  };
-
-  const handleOpenAsociar = (name: string) => {
-    setSelectedPendingName(name);
-    setNewInstName(name);
-    setNewInstEmail('');
-    setNewInstRol('Instructor Técnico');
-    setNewInstEstado('Activo');
-    setSelectedExistingId('');
-    setAssociateMode('associate');
-    setAssociationError(null);
-    setAssociationSuccess(null);
-  };
-
-  const handleConfirmAssociation = async () => {
-    if (!selectedPendingName) return;
-    try {
-      setSubmittingAssociation(true);
-      setAssociationError(null);
-      setAssociationSuccess(null);
-      
-      const activeToken = await getFreshToken();
-      const body: any = {
-        instructorNombreOriginal: selectedPendingName,
-        mode: associateMode,
-      };
-
-      if (associateMode === 'create') {
-        if (!newInstName.trim() || !newInstEmail.trim()) {
-          setAssociationError('El nombre y el correo electrónico son obligatorios para crear un nuevo instructor.');
-          setSubmittingAssociation(false);
-          return;
-        }
-        body.nombre = newInstName.trim();
-        body.correo = newInstEmail.trim().toLowerCase();
-        body.rol = newInstRol;
-        body.estado = newInstEstado;
-      } else {
-        if (!selectedExistingId) {
-          setAssociationError('Debe seleccionar un instructor registrado.');
-          setSubmittingAssociation(false);
-          return;
-        }
-        body.existingInstructorId = selectedExistingId;
-      }
-
-      const res = await fetch('/api/administrativo/itinerario/asociar', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${activeToken}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(body)
-      });
-
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Error al asociar instructor');
-      }
-
-      setAssociationSuccess('Asociación realizada con éxito. Se actualizaron ' + data.updatedRowsCount + ' registros.');
-      setSelectedPendingName(null);
-      loadPendingInstructors();
-      loadInstructors();
-      onSuccessSync(); // Refresh parent view
-    } catch (err: any) {
-      setAssociationError(err.message || 'Ocurrió un error inesperado al procesar la asociación.');
-    } finally {
-      setSubmittingAssociation(false);
-    }
-  };
-
-  const handleItineraryFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const selectedFile = e.target.files?.[0];
-    if (!selectedFile) return;
-    setItineraryFile(selectedFile);
-    setItineraryError(null);
-    setItineraryResult(null);
-
-    try {
-      setItineraryLoading(true);
-      const parsed = await parseItinerarioExcel(selectedFile);
-      if (parsed.length === 0) {
-        throw new Error('El archivo de itinerario no contiene registros válidos.');
-      }
-      setItineraryRows(parsed);
-      setItineraryPreview(parsed.slice(0, 15));
-    } catch (err: any) {
-      console.error(err);
-      setItineraryError('Error al procesar el archivo de itinerario: ' + err.message);
-    } finally {
-      setItineraryLoading(false);
-    }
-  };
-
-  const handleConfirmItineraryUpload = async () => {
-    const finalFicha = itineraryFichaCodigo.trim() || itineraryRows.find(r => r.ficha)?.ficha || '';
-    if (!finalFicha) {
-      alert('El código de ficha es obligatorio. Por favor ingréselo o asegúrese de que venga en el archivo.');
-      return;
-    }
-    if (!itineraryLeaderId) {
-      alert('Debe seleccionar el instructor líder de la ficha.');
-      return;
-    }
-    if (itineraryRows.length === 0) {
-      alert('Debe cargar un archivo de itinerario válido.');
-      return;
-    }
-
-    try {
-      setItineraryLoading(true);
-      setItineraryError(null);
-      setItineraryResult(null);
-      
-      const activeToken = await getFreshToken();
-      const response = await uploadItinerary(
-        activeToken,
-        itineraryFichaCodigo.trim(),
-        itineraryLeaderId,
-        itineraryRows
-      );
-      
-      setItineraryResult(response);
-      onSuccessSync(); // Refresh parent view
-      
-      // Clean up inputs on success
-      setItineraryFichaCodigo('');
-      setItineraryLeaderId(null);
-      setItineraryFile(null);
-      setItineraryRows([]);
-      setItineraryPreview(null);
-    } catch (err: any) {
-      console.error(err);
-      setItineraryError(err.message || 'No se pudo guardar el itinerario en PostgreSQL. La información no fue persistida.');
-    } finally {
-      setItineraryLoading(false);
-    }
-  };
 
   const handleRequestDeleteInstructor = async (ins: any) => {
     if (isPreppingDelete) return;
@@ -499,10 +312,7 @@ export default function AdminSection({
 
   useEffect(() => {
     loadInstructors();
-    if (activeTab === 'programacion') {
-      loadPendingInstructors();
-    }
-  }, [activeTab]);
+  }, []);
 
   const handleSavePassword = async (email: string) => {
     if (!newPassInput.trim()) {
@@ -1060,18 +870,6 @@ export default function AdminSection({
           <ShieldAlert className="w-4 h-4" />
           <span>Alertas Críticas</span>
         </button>
-        <button
-          onClick={() => setActiveTab('itinerario')}
-          className={`flex items-center gap-2 px-4 py-2 text-xs font-bold rounded-lg transition-all duration-300 cursor-pointer ${
-            activeTab === 'itinerario'
-              ? 'bg-[#39A900] text-white shadow-xs'
-              : 'text-slate-500 hover:text-slate-800'
-          }`}
-          id="admin-tab-itinerario-btn"
-        >
-          <BookOpen className="w-4 h-4" />
-          <span>Crear ficha desde itinerario</span>
-        </button>
       </div>
 
       {syncStatus && (
@@ -1205,234 +1003,6 @@ export default function AdminSection({
       )}
 
       {activeTab === 'programacion' && (
-        <div className="space-y-6 animate-fade-in" id="pending-instructors-panel">
-          <div className="bg-slate-50 border border-slate-200 p-4 rounded-xl flex items-start gap-3 text-xs text-slate-800 shadow-3xs">
-            <UserCheck className="w-5 h-5 text-[#39A900] shrink-0 mt-0.5" />
-            <div className="space-y-1">
-              <span className="font-extrabold text-sm text-slate-900 block">Gestión de Instructores Pendientes ("Por asignar")</span>
-              <p className="text-slate-600 font-normal leading-relaxed text-[11px]">
-                Cuando carga un itinerario, los instructores que no existen en la base de datos quedan registrados de forma temporal como <strong>"Por asignar"</strong>. Desde este panel puede asociarlos a un instructor existente en el sistema o registrarlos por primera vez de forma rápida para sincronizar todas sus clases de forma automática.
-              </p>
-            </div>
-          </div>
-
-          {loadingPending ? (
-            <div className="flex flex-col items-center justify-center py-12 space-y-3 bg-white border border-slate-150 rounded-xl">
-              <Loader2 className="w-8 h-8 text-[#39A900] animate-spin" />
-              <span className="text-xs font-bold text-slate-500">Cargando instructores pendientes...</span>
-            </div>
-          ) : pendingInstructors.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-16 px-4 bg-white border border-slate-150 rounded-xl text-center space-y-4">
-              <div className="p-4 bg-emerald-50 text-[#39A900] rounded-full border border-emerald-100">
-                <CheckCircle className="w-10 h-10" />
-              </div>
-              <div className="space-y-1 max-w-md">
-                <h4 className="text-sm font-extrabold text-slate-800">¡Todo al día! No hay instructores pendientes</h4>
-                <p className="text-[11px] text-slate-500 leading-normal">
-                  No se detectaron instructores en estado "Por asignar" en los itinerarios académicos cargados. Todas las relaciones de fichas están completas.
-                </p>
-              </div>
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-              {/* List of pending instructors */}
-              <div className={`${selectedPendingName ? 'lg:col-span-7' : 'lg:col-span-12'} space-y-3`}>
-                <h3 className="text-xs font-extrabold text-slate-550 uppercase tracking-wider">
-                  Nombres detectados en itinerarios ({pendingInstructors.length})
-                </h3>
-                
-                <div className="bg-white border border-slate-150 rounded-xl overflow-hidden shadow-4xs">
-                  <table className="w-full text-left text-xs border-collapse">
-                    <thead>
-                      <tr className="bg-slate-50/75 border-b border-slate-150 text-slate-500 font-bold">
-                        <th className="p-3 text-[11px] uppercase tracking-wider">Nombre en Itinerario</th>
-                        <th className="p-3 text-[11px] uppercase tracking-wider">Fichas Afectadas</th>
-                        <th className="p-3 text-[11px] uppercase tracking-wider text-right">Acción</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100">
-                      {pendingInstructors.map((pending, idx) => (
-                        <tr key={idx} className="hover:bg-slate-50/50 transition-colors">
-                          <td className="p-3 font-semibold text-slate-800">
-                            <div className="flex items-center gap-2">
-                              <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse"></span>
-                              <span>{pending.name}</span>
-                            </div>
-                          </td>
-                          <td className="p-3 text-[11px] text-slate-600">
-                            <div className="flex flex-wrap gap-1">
-                              {pending.fichas.map((f: any, fIdx: number) => (
-                                <span key={fIdx} className="inline-flex items-center gap-1 px-2 py-0.5 bg-slate-100 text-slate-700 rounded-md font-mono text-[10px]" title={`${f.programa} (${f.area})`}>
-                                  Ficha {f.codigo}
-                                </span>
-                              ))}
-                            </div>
-                          </td>
-                          <td className="p-3 text-right">
-                            <button
-                              onClick={() => handleOpenAsociar(pending.name)}
-                              className="inline-flex items-center gap-1 px-3 py-1 bg-[#39A900] hover:bg-[#39A900]/90 text-white font-extrabold rounded-lg text-[11px] transition-colors shadow-4xs cursor-pointer"
-                            >
-                              <span>Asociar o Registrar</span>
-                              <ArrowRight className="w-3.5 h-3.5" />
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-
-              {/* Assignment Form Panel */}
-              {selectedPendingName && (
-                <div className="lg:col-span-5 space-y-4">
-                  <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-3xs space-y-4 relative">
-                    <button
-                      onClick={() => setSelectedPendingName(null)}
-                      className="absolute top-4 right-4 text-slate-400 hover:text-slate-600 font-bold p-1 hover:bg-slate-50 rounded-lg cursor-pointer text-xs"
-                    >
-                      ✕
-                    </button>
-
-                    <div className="space-y-1">
-                      <h4 className="text-xs font-extrabold text-[#39A900] uppercase tracking-wider">Asociar Instructor</h4>
-                      <h3 className="text-sm font-extrabold text-slate-900 leading-snug">{selectedPendingName}</h3>
-                    </div>
-
-                    {/* Mode Selector */}
-                    <div className="grid grid-cols-2 gap-2 p-1 bg-slate-50 border border-slate-150 rounded-xl text-xs">
-                      <button
-                        type="button"
-                        onClick={() => setAssociateMode('associate')}
-                        className={`py-1.5 font-bold rounded-lg transition-all ${associateMode === 'associate' ? 'bg-white text-slate-800 shadow-4xs' : 'text-slate-500 hover:text-slate-700'}`}
-                      >
-                        Asociar Registrado
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setAssociateMode('create')}
-                        className={`py-1.5 font-bold rounded-lg transition-all ${associateMode === 'create' ? 'bg-white text-slate-800 shadow-4xs' : 'text-slate-500 hover:text-slate-700'}`}
-                      >
-                        Registrar Nuevo
-                      </button>
-                    </div>
-
-                    {associationError && (
-                      <div className="p-3 bg-rose-50 border border-rose-100 text-rose-950 rounded-lg text-[11px] flex gap-2">
-                        <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
-                        <span>{associationError}</span>
-                      </div>
-                    )}
-
-                    {associateMode === 'associate' ? (
-                      <div className="space-y-3 text-xs">
-                        <div className="space-y-1">
-                          <label className="block font-bold text-slate-700">Seleccionar Instructor Registrado <span className="text-rose-500">*</span></label>
-                          <select
-                            value={selectedExistingId}
-                            onChange={(e) => setSelectedExistingId(e.target.value)}
-                            className="w-full bg-white border border-slate-250 p-2 rounded-lg text-slate-800"
-                          >
-                            <option value="">-- Seleccionar Instructor --</option>
-                            {instructorsList.map((inst) => (
-                              <option key={inst.id} value={inst.id}>
-                                {inst.nombre} ({inst.correo})
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                        <p className="text-[10px] text-slate-400 leading-normal">
-                          Al confirmar, todas las competencias, RAPs e intervenciones del itinerario con el nombre original serán vinculados permanentemente a este instructor seleccionado.
-                        </p>
-                      </div>
-                    ) : (
-                      <div className="space-y-3 text-xs">
-                        <div className="space-y-1">
-                          <label className="block font-bold text-slate-700">Nombre Completo <span className="text-rose-500">*</span></label>
-                          <input
-                            type="text"
-                            value={newInstName}
-                            onChange={(e) => setNewInstName(e.target.value)}
-                            className="w-full bg-white border border-slate-250 p-2 rounded-lg text-slate-800"
-                            placeholder="Nombre del instructor"
-                          />
-                        </div>
-
-                        <div className="space-y-1">
-                          <label className="block font-bold text-slate-700">Correo Electrónico <span className="text-rose-500">*</span></label>
-                          <input
-                            type="email"
-                            value={newInstEmail}
-                            onChange={(e) => setNewInstEmail(e.target.value)}
-                            className="w-full bg-white border border-slate-250 p-2 rounded-lg text-slate-800"
-                            placeholder="correo@sena.edu.co"
-                          />
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-3">
-                          <div className="space-y-1">
-                            <label className="block font-bold text-slate-700">Rol <span className="text-rose-500">*</span></label>
-                            <select
-                              value={newInstRol}
-                              onChange={(e) => setNewInstRol(e.target.value)}
-                              className="w-full bg-white border border-slate-250 p-2 rounded-lg text-slate-800"
-                            >
-                              <option value="Instructor Técnico">Instructor Técnico</option>
-                              <option value="Instructor Transversal">Instructor Transversal</option>
-                              <option value="Instructor Virtual">Instructor Virtual</option>
-                            </select>
-                          </div>
-                          <div className="space-y-1">
-                            <label className="block font-bold text-slate-700">Estado <span className="text-rose-500">*</span></label>
-                            <select
-                              value={newInstEstado}
-                              onChange={(e) => setNewInstEstado(e.target.value)}
-                              className="w-full bg-white border border-slate-250 p-2 rounded-lg text-slate-800"
-                            >
-                              <option value="Activo">Activo</option>
-                              <option value="Inactivo">Inactivo</option>
-                            </select>
-                          </div>
-                        </div>
-                      </div>
-                    )}
-
-                    <div className="pt-2 flex gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setSelectedPendingName(null)}
-                        className="w-1/3 py-2 border border-slate-250 hover:bg-slate-50 text-slate-750 font-bold text-xs rounded-lg transition-colors cursor-pointer"
-                      >
-                        Cancelar
-                      </button>
-                      <button
-                        type="button"
-                        onClick={handleConfirmAssociation}
-                        disabled={submittingAssociation}
-                        className="w-2/3 py-2 bg-[#39A900] hover:bg-[#39A900]/95 text-white font-extrabold text-xs rounded-lg transition-colors shadow-4xs disabled:opacity-50 cursor-pointer flex items-center justify-center gap-1.5"
-                      >
-                        {submittingAssociation ? (
-                          <>
-                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                            <span>Procesando...</span>
-                          </>
-                        ) : (
-                          <>
-                            <Check className="w-3.5 h-3.5" />
-                            <span>Confirmar asociación</span>
-                          </>
-                        )}
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      )}
-      {false && (
         <div className="space-y-4">
           {parsedRows.length === 0 ? (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
@@ -1441,7 +1011,6 @@ export default function AdminSection({
             <div className="lg:col-span-12 space-y-4">
               
               {/* Sistema de Alertas / Recursos de Plantillas */}
-              {/* MARKER_PROGRAMACION_START */}
               <div className="bg-slate-50 border border-slate-250 rounded-xl p-4 flex flex-col md:flex-row md:items-center justify-between gap-4">
                 <div className="flex items-start gap-3">
                   <div className="p-2.5 bg-[#39A900]/10 rounded-xl text-[#39A900] border border-[#39A900]/20 shrink-0">
@@ -2520,267 +2089,6 @@ export default function AdminSection({
 
       {activeTab === 'alertas_criticas' && (
         <AlertasCriticasSection authToken={authToken} />
-      )}
-
-      {activeTab === 'itinerario' && (
-        <div className="space-y-6">
-          <div className="p-6 bg-white border border-slate-200 rounded-2xl shadow-xs space-y-6">
-            <div className="border-b border-slate-100 pb-4">
-              <h3 className="text-sm font-bold text-slate-800">Cargar itinerario de formación</h3>
-              <p className="text-xs text-slate-500 mt-1">
-                Defina la estructura académica de la ficha a partir de un archivo Excel de itinerario. El sistema creará el programa, las competencias y RAPs correspondientes de forma automática.
-              </p>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {/* Form Inputs */}
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                    Código de ficha <span className="text-slate-400 font-normal">(opcional si está en el Excel)</span> <span className="text-rose-500">*</span>
-                  </label>
-                  <input
-                    type="text"
-                    placeholder="Ej. 3118294 (o dejar vacío si viene en el Excel)"
-                    value={itineraryFichaCodigo}
-                    onChange={(e) => setItineraryFichaCodigo(e.target.value)}
-                    className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-[#39A900] focus:border-transparent"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                    Instructor Líder de la ficha <span className="text-rose-500">*</span>
-                  </label>
-                  <select
-                    value={itineraryLeaderId || ''}
-                    onChange={(e) => setItineraryLeaderId(e.target.value ? Number(e.target.value) : null)}
-                    className="w-full px-3 py-2 border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-[#39A900] focus:border-transparent bg-white"
-                  >
-                    <option value="">-- Seleccione un instructor --</option>
-                    {instructorsList
-                      .filter(i => i.rol !== 'Administrativo')
-                      .map((ins) => (
-                        <option key={ins.id} value={ins.id}>
-                          {ins.nombre} ({ins.correo})
-                        </option>
-                      ))}
-                  </select>
-                </div>
-              </div>
-
-              {/* File Upload Zone */}
-              <div className="flex flex-col justify-center">
-                <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                  Archivo de itinerario (.xlsx) <span className="text-rose-500">*</span>
-                </label>
-                
-                <div className="border-2 border-dashed border-slate-200 hover:border-[#39A900] transition-all duration-300 rounded-2xl p-6 flex flex-col items-center justify-center text-center bg-slate-50/50">
-                  <UploadCloud className="w-8 h-8 text-slate-400 mb-2" />
-                  <span className="text-xs font-bold text-slate-700 mb-1">
-                    {itineraryFile ? itineraryFile.name : 'Seleccionar archivo de itinerario'}
-                  </span>
-                  <span className="text-[10px] text-slate-400 mb-3">
-                    {itineraryFile ? `${(itineraryFile.size / 1024).toFixed(1)} KB` : 'Formatos soportados: .xlsx, .xls'}
-                  </span>
-                  
-                  <input
-                    type="file"
-                    accept=".xlsx, .xls"
-                    onChange={handleItineraryFileChange}
-                    className="hidden"
-                    id="itinerary-file-picker"
-                  />
-                  <label
-                    htmlFor="itinerary-file-picker"
-                    className="px-3 py-1.5 bg-[#39A900] text-white text-[11px] font-extrabold rounded-lg hover:bg-[#319200] transition-all duration-300 cursor-pointer shadow-xs"
-                  >
-                    Examinar archivo
-                  </label>
-                </div>
-              </div>
-            </div>
-
-            {/* Error Message */}
-            {itineraryError && (
-              <div className="p-4 bg-rose-50 border border-rose-100 rounded-xl text-xs text-rose-700 font-medium flex items-start gap-2.5">
-                <AlertTriangle className="w-4 h-4 text-rose-500 shrink-0 mt-0.5" />
-                <div>
-                  <strong className="block font-bold">Error al procesar itinerario:</strong>
-                  <span>{itineraryError}</span>
-                </div>
-              </div>
-            )}
-
-            {/* Success Result */}
-            {itineraryResult && (
-              <div className="p-5 bg-emerald-50/30 border border-emerald-100 rounded-2xl space-y-4">
-                <div className="flex items-center gap-2">
-                  <div className="p-1.5 bg-emerald-100 rounded-lg text-emerald-600">
-                    <CheckCircle className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <h4 className="text-xs font-bold text-slate-800">Itinerario de formación guardado con éxito</h4>
-                    <p className="text-[10px] text-slate-500">Se ha creado o actualizado la ficha {itineraryResult.fichaCodigo}</p>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                  <div className="p-3 bg-white border border-slate-100 rounded-xl">
-                    <span className="block text-[9px] text-slate-400 uppercase font-extrabold">Programa de formación</span>
-                    <span className="block text-xs font-bold text-slate-700 mt-0.5 truncate" title={itineraryResult.programaNombre}>
-                      {itineraryResult.programaNombre}
-                    </span>
-                  </div>
-                  <div className="p-3 bg-white border border-slate-100 rounded-xl">
-                    <span className="block text-[9px] text-slate-400 uppercase font-extrabold">Competencias</span>
-                    <span className="block text-xs font-bold text-slate-700 mt-0.5">
-                      {itineraryResult.competenciasProcesadas} creadas/actualizadas
-                    </span>
-                  </div>
-                  <div className="p-3 bg-white border border-slate-100 rounded-xl">
-                    <span className="block text-[9px] text-slate-400 uppercase font-extrabold">RAPs</span>
-                    <span className="block text-xs font-bold text-slate-700 mt-0.5">
-                      {itineraryResult.rapsProcesados} creados/actualizados
-                    </span>
-                  </div>
-                  <div className="p-3 bg-white border border-slate-100 rounded-xl">
-                    <span className="block text-[9px] text-slate-400 uppercase font-extrabold">Instructores</span>
-                    <span className="block text-xs font-bold text-slate-700 mt-0.5">
-                      {itineraryResult.instructoresAsociadosCount} asociados
-                    </span>
-                  </div>
-                </div>
-
-                {/* Warnings or Unmatched Instructors */}
-                {itineraryResult.instructoresNoEncontradosCount > 0 && (
-                  <div className="p-3 bg-amber-50/50 border border-amber-100 rounded-xl space-y-1">
-                    <span className="text-[10px] text-amber-800 font-bold block flex items-center gap-1">
-                      <AlertTriangle className="w-3.5 h-3.5 text-amber-500" />
-                      <span>Instructores no encontrados en base de datos ({itineraryResult.instructoresNoEncontradosCount})</span>
-                    </span>
-                    <p className="text-[10px] text-amber-700 leading-normal">
-                      Los siguientes nombres aparecen en el itinerario pero no están registrados. Deberá registrarlos por correo para que puedan asociarse:
-                    </p>
-                    <div className="flex flex-wrap gap-1 mt-1.5">
-                      {itineraryResult.instructoresNoEncontrados.map((name: string, i: number) => (
-                        <span key={i} className="text-[9px] font-semibold bg-amber-100/55 text-amber-800 px-2 py-0.5 rounded-md">
-                          {name}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {itineraryResult.warnings && itineraryResult.warnings.length > 0 && (
-                  <div className="p-3 bg-rose-50/50 border border-rose-100 rounded-xl space-y-1">
-                    <span className="text-[10px] text-rose-800 font-bold block flex items-center gap-1">
-                      <AlertTriangle className="w-3.5 h-3.5 text-rose-500" />
-                      <span>Advertencias administrativas</span>
-                    </span>
-                    <ul className="list-disc pl-4 text-[10px] text-rose-700 space-y-0.5">
-                      {itineraryResult.warnings.map((warn: string, i: number) => (
-                        <li key={i}>{warn}</li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Preview Section */}
-            {itineraryPreview && (
-              <div className="space-y-3">
-                <div className="flex items-center justify-between border-t border-slate-100 pt-4">
-                  <div>
-                    <h4 className="text-xs font-bold text-slate-800">Previsualización de itinerario</h4>
-                    <p className="text-[10px] text-slate-500 mt-0.5">
-                      Mostrando las primeras {itineraryPreview.length} de {itineraryRows.length} actividades encontradas.
-                    </p>
-                  </div>
-                  
-                  <button
-                    onClick={handleConfirmItineraryUpload}
-                    disabled={itineraryLoading || (!itineraryFichaCodigo.trim() && !itineraryRows.some(r => r.ficha)) || !itineraryLeaderId}
-                    className="px-4 py-2 bg-[#39A900] text-white text-xs font-extrabold rounded-xl hover:bg-[#319200] transition-all duration-300 flex items-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed select-none shadow-xs"
-                  >
-                    {itineraryLoading ? (
-                      <>
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        <span>Guardando itinerario...</span>
-                      </>
-                    ) : (
-                      <>
-                        <FileCheck className="w-3.5 h-3.5" />
-                        <span>Confirmar y Guardar en PostgreSQL</span>
-                      </>
-                    )}
-                  </button>
-                </div>
-
-                <div className="border border-slate-100 rounded-xl overflow-hidden bg-slate-50/30">
-                  <div className="overflow-x-auto max-h-[350px]">
-                    <table className="w-full text-left border-collapse">
-                      <thead>
-                        <tr className="bg-slate-100 text-[10px] font-extrabold text-slate-600 border-b border-slate-200">
-                          <th className="p-2.5">Programa Detectado</th>
-                          <th className="p-2.5">Competencia (NCL)</th>
-                          <th className="p-2.5">Resultado (RAP)</th>
-                          <th className="p-2.5 text-center">Trimestre</th>
-                          <th className="p-2.5">Intervención</th>
-                          <th className="p-2.5">Instructor</th>
-                          <th className="p-2.5">Área / Rol Inferido</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100 text-[10px] font-medium text-slate-600 bg-white">
-                        {itineraryPreview.map((row, idx) => {
-                          const isInstructorFound = instructorsList.some(
-                            i => i.nombre?.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, '') ===
-                                 row.instructor?.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, '')
-                          );
-                          return (
-                            <tr key={idx} className="hover:bg-slate-50/50 transition-colors">
-                              <td className="p-2.5 max-w-[150px] truncate" title={row.fkItinerary}>
-                                {normalizePrograma(row.fkItinerary)}
-                              </td>
-                              <td className="p-2.5 max-w-[180px] truncate" title={row.ncl}>
-                                {row.ncl}
-                              </td>
-                              <td className="p-2.5 max-w-[180px] truncate" title={row.rap}>
-                                {row.rap}
-                              </td>
-                              <td className="p-2.5 text-center">{row.trimestre || row.quarter || '-'}</td>
-                              <td className="p-2.5 text-slate-500">
-                                {row.fechaIntervencionInicio && row.fechaIntervencionFin && row.fechaIntervencionInicio !== row.fechaIntervencionFin ? (
-                                  <span>{row.fechaIntervencionInicio} al {row.fechaIntervencionFin}</span>
-                                ) : (
-                                  <span>{row.fechaIntervencionInicio || row.fechaIntervencionISO}</span>
-                                )}
-                                <span className="text-[9px] block text-slate-400">{row.hora}</span>
-                              </td>
-                              <td className="p-2.5">
-                                <span className="block font-bold">{row.instructor || '-'}</span>
-                                <span className={`text-[9px] px-1 py-0.2 rounded font-bold ${
-                                  isInstructorFound ? 'bg-emerald-50 text-emerald-600' : 'bg-rose-50 text-rose-500'
-                                }`}>
-                                  {isInstructorFound ? 'Encontrado' : 'No encontrado'}
-                                </span>
-                              </td>
-                              <td className="p-2.5">
-                                <span className="font-bold text-slate-700 block">{row.inferredArea}</span>
-                                <span className="text-slate-400 text-[9px] block">{row.inferredRol}</span>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
       )}
 
     </div>

@@ -256,30 +256,9 @@ export async function saveBitacoraSeguimiento(
     const errorData = await res.json().catch(() => null);
     throw new Error(errorData?.error || 'Error al registrar el seguimiento en la bitácora');
   }
-  return res.json();
-}
-
-export async function uploadItinerary(
-  token: string,
-  codigoFicha: string,
-  instructorLiderId: number | null,
-  rows: any[]
-) {
-  const res = await fetch('/api/administrativo/itinerario', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      codigoFicha,
-      instructorLiderId,
-      rows
-    })
-  });
-  if (!res.ok) {
-    const errorData = await res.json().catch(() => null);
-    throw new Error(errorData?.error || 'No se pudo guardar el itinerario en PostgreSQL. La información no fue persistida.');
+  const data = await res.json();
+  if (!data?.success) {
+    throw new Error(data?.error || 'Error al registrar el seguimiento en la bitácora');
   }
-  return res.json();
+  return data;
 }
