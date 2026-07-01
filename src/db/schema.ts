@@ -1,4 +1,4 @@
-import { pgTable, serial, text, integer, timestamp, jsonb } from 'drizzle-orm/pg-core';
+import { pgTable, serial, text, integer, timestamp, jsonb, boolean } from 'drizzle-orm/pg-core';
 import { relations } from 'drizzle-orm';
 
 // 1. Table for Instructores (tied to Firebase Auth uid if logged in)
@@ -203,6 +203,130 @@ export const alertasCriticasRelations = relations(alertasCriticas, ({ one }) => 
   }),
   instructor: one(instructores, {
     fields: [alertasCriticas.instructorId],
+    references: [instructores.id],
+  }),
+}));
+
+// 8. Table for Competencias de Formación
+export const competenciasFormacion = pgTable('competencias_formacion', {
+  id: serial('id').primaryKey(),
+  programaId: integer('programa_id')
+    .references(() => programasFormacion.id, { onDelete: 'cascade' })
+    .notNull(),
+  codigoCompetencia: text('codigo_competencia').notNull(),
+  nombreCompetencia: text('nombre_competencia').notNull(),
+  areaCompetencia: text('area_competencia'),
+  textoOriginalNcl: text('texto_original_ncl'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+});
+
+// 9. Table for Raps de Formación (Resultados de Aprendizaje)
+export const rapsFormacion = pgTable('raps_formacion', {
+  id: serial('id').primaryKey(),
+  competenciaId: integer('competencia_id')
+    .references(() => competenciasFormacion.id, { onDelete: 'cascade' })
+    .notNull(),
+  codigoRap: text('codigo_rap').notNull(),
+  descripcionRap: text('descripcion_rap').notNull(),
+  textoOriginalRap: text('texto_original_rap'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+});
+
+// 10. Table for Itinerarios de Ficha
+export const itinerariosFicha = pgTable('itinerarios_ficha', {
+  id: serial('id').primaryKey(),
+  fichaId: integer('ficha_id')
+    .references(() => fichas.id, { onDelete: 'cascade' })
+    .notNull(),
+  archivoOrigen: text('archivo_origen'),
+  fkItinerary: text('fk_itinerary'),
+  fechaInicioFicha: text('fecha_inicio_ficha'),
+  fechaFinFicha: text('fecha_fin_ficha'),
+  fechaCarga: timestamp('fecha_carga').defaultNow(),
+  creadoPor: text('creado_por'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+});
+
+// 11. Table for Detalle del Itinerario de la Ficha
+export const itinerarioDetalleFicha = pgTable('itinerario_detalle_ficha', {
+  id: serial('id').primaryKey(),
+  fichaId: integer('ficha_id')
+    .references(() => fichas.id, { onDelete: 'cascade' })
+    .notNull(),
+  itinerarioId: integer('itinerario_id')
+    .references(() => itinerariosFicha.id, { onDelete: 'cascade' })
+    .notNull(),
+  competenciaId: integer('competencia_id')
+    .references(() => competenciasFormacion.id, { onDelete: 'cascade' })
+    .notNull(),
+  rapId: integer('rap_id')
+    .references(() => rapsFormacion.id, { onDelete: 'cascade' })
+    .notNull(),
+  fkKeyword: text('fk_keyword'),
+  ncl: text('ncl'),
+  competency: text('competency'),
+  rapTextoOriginal: text('rap_texto_original'),
+  quarter: text('quarter'),
+  faseFormacion: text('fase_formacion'),
+  trimestre: text('trimestre'),
+  fechaIntervencionInicio: text('fecha_intervencion_inicio'),
+  fechaIntervencionFin: text('fecha_intervencion_fin'),
+  hora: text('hora'),
+  instructorId: integer('instructor_id')
+    .references(() => instructores.id, { onDelete: 'set null' }),
+  instructorNombreOriginal: text('instructor_nombre_original'),
+  estadoAsignacionInstructor: text('estado_asignacion_instructor').default('Por asignar'),
+  rolInstructorEnFicha: text('rol_instructor_en_ficha'),
+  area: text('area'),
+  esPosibleLider: boolean('es_posible_lider').default(false),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+});
+
+// Relationships for new tables
+export const competenciasRelations = relations(competenciasFormacion, ({ one, many }) => ({
+  programa: one(programasFormacion, {
+    fields: [competenciasFormacion.programaId],
+    references: [programasFormacion.id],
+  }),
+  raps: many(rapsFormacion),
+  detallesItinerario: many(itinerarioDetalleFicha),
+}));
+
+export const rapsRelations = relations(rapsFormacion, ({ one, many }) => ({
+  competencia: one(competenciasFormacion, {
+    fields: [rapsFormacion.competenciaId],
+    references: [competenciasFormacion.id],
+  }),
+  detallesItinerario: many(itinerarioDetalleFicha),
+}));
+
+export const itinerariosFichaRelations = relations(itinerariosFicha, ({ one, many }) => ({
+  ficha: one(fichas, {
+    fields: [itinerariosFicha.fichaId],
+    references: [fichas.id],
+  }),
+  detalles: many(itinerarioDetalleFicha),
+}));
+
+export const itinerarioDetalleFichaRelations = relations(itinerarioDetalleFicha, ({ one }) => ({
+  ficha: one(fichas, {
+    fields: [itinerarioDetalleFicha.fichaId],
+    references: [fichas.id],
+  }),
+  itinerario: one(itinerariosFicha, {
+    fields: [itinerarioDetalleFicha.itinerarioId],
+    references: [itinerariosFicha.id],
+  }),
+  competencia: one(competenciasFormacion, {
+    fields: [itinerarioDetalleFicha.competenciaId],
+    references: [competenciasFormacion.id],
+  }),
+  rap: one(rapsFormacion, {
+    fields: [itinerarioDetalleFicha.rapId],
+    references: [rapsFormacion.id],
+  }),
+  instructor: one(instructores, {
+    fields: [itinerarioDetalleFicha.instructorId],
     references: [instructores.id],
   }),
 }));
