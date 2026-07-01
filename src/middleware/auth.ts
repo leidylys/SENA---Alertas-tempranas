@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
-import { adminAuth } from '../lib/firebase-admin.ts';
+import { adminAuth, resolveFirebaseAdminProjectId } from '../lib/firebase-admin.ts';
 import { DecodedIdToken } from 'firebase-admin/auth';
 import { getApps } from 'firebase-admin/app';
 
@@ -51,8 +51,15 @@ export const requireAuth = async (
     console.log(`[DEV LOG] AUTH_STEP: firebase_admin_verify_start`);
   }
 
-  // Get project ID used by Admin SDK if possible
-  const firebaseAdminProjectId = (process.env.FIREBASE_PROJECT_ID || '').trim() || 'fast-hawk-0dzmz';
+  let firebaseAdminProjectId = '';
+  try {
+    firebaseAdminProjectId = resolveFirebaseAdminProjectId();
+  } catch (error: any) {
+    if (isDev) {
+      console.log(`[DEV LOG] AUTH_STEP: firebase_admin_verify_error | ${error.message}`);
+    }
+    return res.status(500).json({ error: `Unauthorized: ${error.message}` });
+  }
 
   // Check if Firebase Admin is properly initialized
   if (!getApps().length) {
@@ -94,4 +101,3 @@ export const requireAuth = async (
     });
   }
 };
-
