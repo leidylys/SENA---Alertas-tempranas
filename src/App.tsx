@@ -7,6 +7,7 @@ import FichasTable from './components/FichasTable';
 import DashboardPage from './pages/DashboardPage';
 import { signInWithPopup, signInWithRedirect, getRedirectResult, signOut, onIdTokenChanged, User as FirebaseUser } from 'firebase/auth';
 import { auth, googleAuthProvider, isFirebaseConfigured } from './lib/firebase.ts';
+import { construirFasesDesdeEvidencias } from './utils/excelParser';
 import { 
   syncInstructor, 
   fetchFichas, 
@@ -248,6 +249,9 @@ export default function App() {
     if (!token) return;
     try {
       const data = await fetchFichas(token);
+      console.log('[PERSISTENCE_DEBUG] App.reloadFichas.consulta_post_guardado', {
+        totalFichas: Array.isArray(data) ? data.length : null
+      });
       setSavedFichas(data);
     } catch (err) {
       console.error('Error reloading saved cohort list:', err);
@@ -416,6 +420,10 @@ export default function App() {
     setIsSyncingDb(true);
     try {
       const data = await fetchFichaDetails(authToken, codigoFicha);
+      console.log('[PERSISTENCE_DEBUG] App.handleSelectSavedFicha.consulta_db', {
+        codigoFicha,
+        totalAprendices: Array.isArray(data?.aprendices) ? data.aprendices.length : null
+      });
       if (data && data.ficha) {
         // Construct the Ficha metadata block
         const loadedFichaInfo: FichaInfo = {
@@ -430,52 +438,10 @@ export default function App() {
           fechaFin: data.ficha.fechaFin
         };
         
-        // Rebuild standard phases for checking risk
-        // A standard full-track course usually has standard phases
-        const mockPhases: Fase[] = [
-          {
-            id: 'fase-analisis',
-            nombre: 'Fase 1: Análisis',
-            selected: true,
-            evidencias: [
-              { nombre: 'Evidencia 1: Mapa conceptual del software', ponderacion: 25, selected: true },
-              { nombre: 'Evidencia 2: Especificación de requerimientos', ponderacion: 25, selected: true },
-              { nombre: 'Evidencia 3: Caso de estudio y modelado', ponderacion: 50, selected: true },
-            ]
-          },
-          {
-            id: 'fase-diseno',
-            nombre: 'Fase 2: Diseño',
-            selected: false,
-            evidencias: [
-              { nombre: 'Evidencia 1: Diseño de base de datos relacional', ponderacion: 30, selected: false },
-              { nombre: 'Evidencia 2: Prototipado y arquitectura de interfaz', ponderacion: 30, selected: false },
-              { nombre: 'Evidencia 3: Manual de diseño de software', ponderacion: 40, selected: false },
-            ]
-          },
-          {
-            id: 'fase-desarrollo',
-            nombre: 'Fase 3: Desarrollo',
-            selected: false,
-            evidencias: [
-              { nombre: 'Evidencia 1: Codificación de módulos API Express', ponderacion: 40, selected: false },
-              { nombre: 'Evidencia 2: Pruebas unitarias de software', ponderacion: 30, selected: false },
-              { nombre: 'Evidencia 3: Despliegue en servidores en la nube', ponderacion: 30, selected: false },
-            ]
-          },
-          {
-            id: 'fase-evaluacion',
-            nombre: 'Fase 4: Evaluación',
-            selected: false,
-            evidencias: [
-              { nombre: 'Evidencia 1: Manual técnico y documentación', ponderacion: 50, selected: false },
-              { nombre: 'Evidencia 2: Informe de pruebas de aceptación', ponderacion: 50, selected: false },
-            ]
-          }
-        ];
+        const realPhases = construirFasesDesdeEvidencias(data.aprendices || []);
 
         // Synchronize our React store state
-        store.setDatosCargados(data.aprendices, mockPhases);
+        store.setDatosCargados(data.aprendices, realPhases);
         setFichaInfo(loadedFichaInfo);
         setCurrentView('active_dashboard');
       }
@@ -501,7 +467,13 @@ export default function App() {
     setIsSavingNewFicha(true);
     try {
       // 1. Sync structures to secure Google Cloud SQL backend
-      await syncLearnersToDb(
+      console.log('[PERSISTENCE_DEBUG] App.handleDataLoadedSync.datos_formulario', {
+        ficha: info.numeroFicha,
+        programa: info.programaFormacion,
+        totalAprendices: aprendices.length,
+        aprendices
+      });
+      const saveResponse = await syncLearnersToDb(
         authToken,
         info.numeroFicha,
         info.programaFormacion,
@@ -510,12 +482,18 @@ export default function App() {
         '2027-12-15', // Fecha fin estimación
         aprendices
       );
+      console.log('[PERSISTENCE_DEBUG] App.handleDataLoadedSync.respuesta_backend', saveResponse);
 
-      // 2. Refreshsaved fichas catalogue in memory
+      // 2. Refresh saved fichas catalogue from the database
       await reloadFichas();
 
-      // 3. Load standard React State
-      store.setDatosCargados(aprendices, phases);
+      // 3. Reload the just-saved ficha from PostgreSQL/Neon before updating React state
+      const reloaded = await fetchFichaDetails(authToken, info.numeroFicha);
+      console.log('[PERSISTENCE_DEBUG] App.handleDataLoadedSync.consulta_post_guardado', {
+        ficha: info.numeroFicha,
+        totalAprendices: Array.isArray(reloaded?.aprendices) ? reloaded.aprendices.length : null
+      });
+      store.setDatosCargados(reloaded?.aprendices || [], phases);
       setFichaInfo(info);
       setCurrentView('active_dashboard');
     } catch (err: any) {

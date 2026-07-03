@@ -84,14 +84,6 @@ export function rowColorNivel(nivel: 'Bajo' | 'Medio' | 'Alto'): string {
   }
 }
 
-/**
- * Formats evidence name to clean up any trailing "(Letra)" string for display.
- */
 export function formatEvidenciaNombre(nombre: string): string {
-  if (!nombre) return '';
-  const suffix = ' (Letra)';
-  if (nombre.toUpperCase().endsWith(suffix.toUpperCase())) {
-    return nombre.substring(0, nombre.length - suffix.length).trim();
-  }
-  return nombre;
+  return nombre || '';
 }

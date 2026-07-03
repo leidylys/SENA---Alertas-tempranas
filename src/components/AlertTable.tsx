@@ -2364,6 +2364,20 @@ export function BitacoraLogger({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
+  const handleMedioComunicacionChange = (value: string) => {
+    setMedioComunicacion(value);
+
+    if (
+      value === 'Correo electrónico' &&
+      tipoSeguimiento === 'Comunicación de seguimiento' &&
+      !respondingToSeguimiento
+    ) {
+      setErrorMsg(null);
+      setSuccessMsg(null);
+      onEnviarLlamado(aprendiz);
+    }
+  };
+
   // Sync with respondingToSeguimiento trigger
   useEffect(() => {
     if (respondingToSeguimiento) {
@@ -2409,7 +2423,11 @@ export function BitacoraLogger({
       const totalAprobadas = getACountLocal(aprendiz);
       const totalNoAprobadas = getDCountLocal(aprendiz);
       const totalEnviadas = totalAprobadas + totalNoAprobadas;
-      const totalPendientes = totalEvidencias - totalAprobadas;
+      const totalNoEntregadas = Object.values(aprendiz.evidencias || {}).filter(v => {
+        const valStr = v && typeof v === 'object' ? (v as any).estado : String(v);
+        return valStr === '-';
+      }).length;
+      const totalPendientes = totalNoAprobadas + totalNoEntregadas;
       
       const evs = aprendiz.evidencias || {};
       const groupedPending: Record<string, Record<string, string[]>> = {};
@@ -2424,7 +2442,7 @@ export function BitacoraLogger({
           valStr = String(value);
         }
 
-        if (valStr === 'D' || valStr === '-' || valStr === '' || !valStr) {
+        if (valStr === 'D' || valStr === '-') {
           let faseName = 'Fase de Formación';
           let actProyecto = 'Sin Actividad';
 
@@ -2622,9 +2640,9 @@ Acuerdos y compromisos: ${compromisos.trim() || 'Sin acuerdos particulares'}`,
         };
 
         if (medioComunicacion === 'Correo electrónico') {
-          payload.isLlamadoOficial = true;
-          payload.aprendizDocumento = aprendiz.documento;
-          payload.aprendizCorreo = aprendiz.correo || '';
+          onEnviarLlamado(aprendiz);
+          setIsSubmitting(false);
+          return;
         }
       }
 
@@ -2669,7 +2687,7 @@ Acuerdos y compromisos: ${compromisos.trim() || 'Sin acuerdos particulares'}`,
       return "Registrar respuesta / actualización";
     }
     if (medioComunicacion === 'Correo electrónico') {
-      return "Continuar con correo";
+      return "Continuar con llamado por correo";
     }
     if (medioComunicacion === 'Llamada telefónica' || medioComunicacion === 'WhatsApp') {
       return "Registrar comunicación";
@@ -2885,11 +2903,11 @@ Acuerdos y compromisos: ${compromisos.trim() || 'Sin acuerdos particulares'}`,
                 </label>
                 <select
                   value={medioComunicacion}
-                  onChange={e => setMedioComunicacion(e.target.value)}
+                  onChange={e => handleMedioComunicacionChange(e.target.value)}
                   className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white font-bold text-slate-800 focus:border-[#007832] focus:ring-1 focus:ring-[#007832] outline-none"
                 >
                   <option value="WhatsApp">WhatsApp</option>
-                  <option value="Correo electrónico">Correo electrónico (Llamado oficial)</option>
+                  <option value="Correo electrónico">Correo electrónico / Llamado oficial</option>
                   <option value="Llamada telefónica">Llamada telefónica</option>
                   <option value="Presencial">Reunión Presencial</option>
                   <option value="Otro">Otro medio</option>
@@ -2961,7 +2979,7 @@ Acuerdos y compromisos: ${compromisos.trim() || 'Sin acuerdos particulares'}`,
                     <div>
                       <h4 className="font-black text-amber-950">Asistente de Llamado por Correo Electrónico Activo</h4>
                       <p className="text-[11px] leading-relaxed mt-1 text-amber-850">
-                        El cuerpo del correo ha sido generado de forma automática con el reporte detallado de las evidencias desaprobadas y pendientes del aprendiz. Puede revisar y modificar el texto a continuación antes de enviarlo. Al registrar se incrementará automáticamente el contador de llamados de atención oficiales.
+                        Se abrirá el modal oficial de correo para generar automáticamente el asunto y el cuerpo del llamado, permitir su edición, copiar el texto, abrir el correo y registrar el llamado en la bitácora. Solo este medio incrementa el contador de llamados oficiales.
                       </p>
                     </div>
                   </div>

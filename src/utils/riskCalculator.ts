@@ -36,6 +36,10 @@ function esNoAprobada(stateStr: string): boolean {
   return norm === 'd' || norm === 'desaprobado' || norm === 'desaprobada' || norm === 'reprobado' || norm === 'reprobada';
 }
 
+function esNoEntregada(stateStr: string): boolean {
+  return stateStr.trim() === '-';
+}
+
 /**
  * Calculates risk score and classification for a single learner based on selected evidences.
  * 
@@ -88,7 +92,8 @@ export function calcularRiesgoAprendiz(
       totalAprobadas++;
     } else if (esNoAprobada(stateStr)) {
       totalNoAprobadas++;
-    } else {
+      totalPendientes++;
+    } else if (esNoEntregada(stateStr)) {
       totalPendientes++;
     }
   });
