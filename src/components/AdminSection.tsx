@@ -130,17 +130,22 @@ export default function AdminSection({
   const [syncStatus, setSyncStatus] = useState<{
     successCount: number;
     errorCount: number;
-    details: any[];
+    details: any;
+    persistedIn?: string;
+    postgresVerification?: any;
     summary?: {
       instructoresCreados: number;
       fichasCreadas: number;
       asignacionesNuevas: number;
       asignacionesConservadas: number;
+      reemplazosRealizados?: number;
+      conflictosDetectados?: number;
       conflictos: any[];
       registrosNoModificados: number;
       errores?: string[];
     };
   } | null>(null);
+  const [activeLoadReportCategory, setActiveLoadReportCategory] = useState<string>('todos');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Student roster batch states
@@ -562,11 +567,25 @@ export default function AdminSection({
     setSyncStatus(null);
     try {
       const activeToken = await getFreshToken();
+      console.log('[PERSISTENCE_DEBUG] AdminSection.triggerDatabaseSincronizacion.datos_formulario', {
+        totalRegistros: parsedRows.length,
+        programacion: parsedRows
+      });
       const res = await uploadProgrammingGrid(activeToken, parsedRows);
+      console.log('[PERSISTENCE_DEBUG] AdminSection.triggerDatabaseSincronizacion.respuesta_backend', res);
       if (res && res.success) {
         let successCount = 0;
         let errorCount = 0;
-        if (Array.isArray(res.details)) {
+        if (res.summary) {
+          successCount =
+            (res.summary.instructoresCreados || 0) +
+            (res.summary.fichasCreadas || 0) +
+            (res.summary.asignacionesNuevas || 0) +
+            (res.summary.asignacionesConservadas || 0);
+          errorCount =
+            (res.summary.conflictosDetectados || res.summary.conflictos?.length || 0) +
+            (res.summary.registrosNoModificados || 0);
+        } else if (Array.isArray(res.details)) {
           res.details.forEach((d: any) => {
             if (d.status === 'Sincronizado') successCount++;
             else errorCount++;
@@ -580,6 +599,7 @@ export default function AdminSection({
           fichasCreadas: 0,
           asignacionesNuevas: successCount,
           asignacionesConservadas: 0,
+          reemplazosRealizados: 0,
           conflictos: [],
           registrosNoModificados: errorCount
         };
@@ -603,15 +623,20 @@ export default function AdminSection({
           successCount,
           errorCount,
           details: res.details || [],
+          persistedIn: res.persistedIn,
+          postgresVerification: res.postgresVerification,
           summary
         });
+        setActiveLoadReportCategory('todos');
 
         setParsedRows([]);
         setFile(null);
         loadInstructors(); // Refresh the credential directory list too!
+        console.log('[PERSISTENCE_DEBUG] AdminSection.triggerDatabaseSincronizacion.refetch_fichas_desde_db');
         onSuccessSync(); // Reload core App's ficha listings!
       }
     } catch (err: any) {
+      console.error('[PERSISTENCE_DEBUG] AdminSection.triggerDatabaseSincronizacion.error_escritura', err);
       alert('Fallo al cargar la programación en el servidor: ' + err.message);
     } finally {
       setLoading(false);
@@ -654,7 +679,7 @@ export default function AdminSection({
         // Validate that this is indeed an apprentice listing and not a qualifications report
         const reportType = detectExcelReportType(rows2D);
         if (reportType === 'calificaciones') {
-          throw new Error('El archivo cargado corresponde a un reporte de calificaciones y no a un listado de aprendices.');
+          throw new Error('El archivo cargado no corresponde a un reporte de aprendices por ficha.');
         }
 
         const result = parseReporteAprendicesExcel(rows2D);
@@ -736,6 +761,12 @@ export default function AdminSection({
 
         // Sync to Cloud SQL via API Route
         const activeToken = await getFreshToken();
+        console.log('[PERSISTENCE_DEBUG] AdminSection.startBatchSincronizacion.datos_formulario', {
+          archivo: item.fileName,
+          ficha: item.fichaCodigo,
+          totalAprendices: result.aprendices.length,
+          aprendices: result.aprendices
+        });
         const syncResponse = await syncLearnersToDb(
           activeToken,
           item.fichaCodigo,
@@ -745,6 +776,11 @@ export default function AdminSection({
           item.fechaFin,
           result.aprendices
         );
+        console.log('[PERSISTENCE_DEBUG] AdminSection.startBatchSincronizacion.respuesta_backend', {
+          archivo: item.fileName,
+          ficha: item.fichaCodigo,
+          response: syncResponse
+        });
 
         setBatchFiles(prev => prev.map(f => f.id === item.id ? { ...f, status: 'sincronizado', errorMsg: undefined } : f));
         successfullySynced++;
@@ -760,10 +796,12 @@ export default function AdminSection({
           conservados: syncResponse.summary?.conservados ?? 0,
           inactivados: syncResponse.summary?.inactivados ?? 0,
           reactivados: syncResponse.summary?.reactivados ?? 0,
+          persistedIn: syncResponse.persistedIn,
+          postgresVerification: syncResponse.postgresVerification,
           status: 'success'
         });
       } catch (err: any) {
-        console.error(err);
+        console.error('[PERSISTENCE_DEBUG] AdminSection.startBatchSincronizacion.error_escritura', err);
         setBatchFiles(prev => prev.map(f => f.id === item.id ? { ...f, status: 'error', errorMsg: err.message || 'Error de conexión' } : f));
         failedSynced++;
         summaries.push({
@@ -785,7 +823,135 @@ export default function AdminSection({
     setIsProcessingBatch(false);
     setBatchSyncSummary(summaries);
     setBatchSyncStatus(`Proceso de sincronización completado. Se procesaron ${pending.length} archivo(s): ${successfullySynced} cargados con éxito, ${failedSynced} fallidos.`);
+    console.log('[PERSISTENCE_DEBUG] AdminSection.startBatchSincronizacion.refetch_fichas_desde_db', {
+      successfullySynced,
+      failedSynced
+    });
     onSuccessSync(); // Refresh lists!
+  };
+
+  const getLoadReportDetails = () => {
+    const rawDetails = syncStatus?.details;
+    if (rawDetails && !Array.isArray(rawDetails)) {
+      return {
+        instructoresCreados: rawDetails.instructoresCreados || [],
+        fichasCreadas: rawDetails.fichasCreadas || [],
+        asignacionesNuevas: rawDetails.asignacionesNuevas || [],
+        asignacionesConservadas: rawDetails.asignacionesConservadas || [],
+        reemplazosRealizados: rawDetails.reemplazosRealizados || [],
+        conflictosDetectados: rawDetails.conflictosDetectados || [],
+        registrosNoModificados: rawDetails.registrosNoModificados || []
+      };
+    }
+
+    return {
+      instructoresCreados: [],
+      fichasCreadas: [],
+      asignacionesNuevas: [],
+      asignacionesConservadas: [],
+      reemplazosRealizados: [],
+      conflictosDetectados: syncStatus?.summary?.conflictos || [],
+      registrosNoModificados: []
+    };
+  };
+
+  const getLoadReportCategories = () => {
+    const details = getLoadReportDetails();
+    return [
+      {
+        key: 'instructoresCreados',
+        label: 'Instructores Creados',
+        count: syncStatus?.summary?.instructoresCreados ?? details.instructoresCreados.length,
+        tone: 'slate',
+        description: 'acciones aplicadas'
+      },
+      {
+        key: 'fichasCreadas',
+        label: 'Fichas Creadas',
+        count: syncStatus?.summary?.fichasCreadas ?? details.fichasCreadas.length,
+        tone: 'slate',
+        description: 'acciones aplicadas'
+      },
+      {
+        key: 'asignacionesNuevas',
+        label: 'Asignaciones Nuevas',
+        count: syncStatus?.summary?.asignacionesNuevas ?? details.asignacionesNuevas.length,
+        tone: 'emerald',
+        description: 'acciones aplicadas'
+      },
+      {
+        key: 'asignacionesConservadas',
+        label: 'Asignaciones Conservadas',
+        count: syncStatus?.summary?.asignacionesConservadas ?? details.asignacionesConservadas.length,
+        tone: 'blue',
+        description: 'acciones conservadas'
+      },
+      {
+        key: 'reemplazosRealizados',
+        label: 'Reemplazos Realizados',
+        count: syncStatus?.summary?.reemplazosRealizados ?? details.reemplazosRealizados.length,
+        tone: 'amber',
+        description: 'acciones aplicadas'
+      },
+      {
+        key: 'conflictosDetectados',
+        label: 'Conflictos Detectados',
+        count: syncStatus?.summary?.conflictosDetectados ?? syncStatus?.summary?.conflictos?.length ?? details.conflictosDetectados.length,
+        tone: 'rose',
+        description: 'acciones rechazadas'
+      },
+      {
+        key: 'registrosNoModificados',
+        label: 'Registros No Modificados',
+        count: syncStatus?.summary?.registrosNoModificados ?? details.registrosNoModificados.length,
+        tone: 'slate',
+        description: 'sin modificación'
+      }
+    ];
+  };
+
+  const getSelectedLoadReportRows = () => {
+    const details = getLoadReportDetails();
+    if (activeLoadReportCategory === 'todos') {
+      return Object.entries(details).flatMap(([category, rows]) =>
+        (rows as any[]).map(row => ({ ...row, category }))
+      );
+    }
+    return ((details as any)[activeLoadReportCategory] || []).map((row: any) => ({
+      ...row,
+      category: activeLoadReportCategory
+    }));
+  };
+
+  const getCategoryLabel = (category: string) => {
+    if (category === 'todos') return 'Todos los resultados';
+    return getLoadReportCategories().find(item => item.key === category)?.label || category;
+  };
+
+  const exportLoadReport = () => {
+    const rows = getSelectedLoadReportRows();
+    if (rows.length === 0) {
+      alert('No hay registros para exportar en esta categoría.');
+      return;
+    }
+
+    const exportRows = rows.map((row: any) => ({
+      Categoria: getCategoryLabel(row.category),
+      Fila: row.rowNumber || '',
+      Ficha: row.fichaCodigo || row.codigoFicha || '',
+      Programa: row.programa || '',
+      Instructor: row.instructorNombre || row.instructorNuevo || '',
+      Correo: row.instructorCorreo || row.correoInstructor || '',
+      Rol: row.rolEnFicha || row.rol || '',
+      Area: row.area || 'General',
+      Estado: row.status || '',
+      Motivo: row.reason || row.motivoDetallado || row.tipoConflicto || ''
+    }));
+
+    const worksheet = XLSX.utils.json_to_sheet(exportRows);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Informe de carga');
+    XLSX.writeFile(workbook, `informe-carga-programacion-${new Date().toISOString().slice(0, 10)}.xlsx`);
   };
 
   return (
@@ -893,112 +1059,141 @@ export default function AdminSection({
             </button>
           </div>
 
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-            {/* 1. Instructores Nuevos */}
-            <div className="p-3 bg-slate-50 border border-slate-100 rounded-lg">
-              <span className="block text-[9px] text-slate-400 uppercase font-extrabold tracking-wider">Instructores Creados</span>
-              <strong className="text-base text-slate-700 font-extrabold block mt-0.5">
-                {syncStatus.summary?.instructoresCreados ?? 0}
-              </strong>
-            </div>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <button
+              onClick={() => setActiveLoadReportCategory('todos')}
+              className={`px-3 py-1.5 rounded-lg border text-[10px] font-extrabold transition-all ${
+                activeLoadReportCategory === 'todos'
+                  ? 'bg-slate-900 text-white border-slate-900 shadow-xs'
+                  : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+              }`}
+            >
+              Ver todos los resultados
+            </button>
 
-            {/* 2. Fichas Nuevas */}
-            <div className="p-3 bg-slate-50 border border-slate-100 rounded-lg">
-              <span className="block text-[9px] text-slate-400 uppercase font-extrabold tracking-wider">Fichas Creadas</span>
-              <strong className="text-base text-slate-700 font-extrabold block mt-0.5">
-                {syncStatus.summary?.fichasCreadas ?? 0}
-              </strong>
-            </div>
-
-            {/* 3. Asignaciones Nuevas */}
-            <div className="p-3 bg-emerald-50/50 border border-emerald-100 rounded-lg">
-              <span className="block text-[9px] text-emerald-650 uppercase font-extrabold tracking-wider">Asignaciones Nuevas</span>
-              <strong className="text-base text-[#39A900] font-extrabold block mt-0.5">
-                {syncStatus.summary?.asignacionesNuevas ?? syncStatus.successCount}
-              </strong>
-            </div>
-
-            {/* 4. Asignaciones Conservadas */}
-            <div className="p-3 bg-blue-50/35 border border-blue-100 rounded-lg">
-              <span className="block text-[9px] text-blue-600 uppercase font-extrabold tracking-wider">Asignaciones Conservadas</span>
-              <strong className="text-base text-blue-700 font-extrabold block mt-0.5">
-                {syncStatus.summary?.asignacionesConservadas ?? 0}
-              </strong>
-            </div>
-
-            {/* 5. Conflictos Detectados */}
-            <div className={`p-3 border rounded-lg ${
-              (syncStatus.summary?.conflictos?.length ?? 0) > 0 
-                ? 'bg-rose-50 border-rose-100' 
-                : 'bg-slate-50 border-slate-100'
-            }`}>
-              <span className={`block text-[9px] uppercase font-extrabold tracking-wider ${
-                (syncStatus.summary?.conflictos?.length ?? 0) > 0 ? 'text-rose-600' : 'text-slate-400'
-              }`}>Conflictos Detectados</span>
-              <strong className={`text-base font-extrabold block mt-0.5 ${
-                (syncStatus.summary?.conflictos?.length ?? 0) > 0 ? 'text-rose-600' : 'text-slate-700'
-              }`}>
-                {syncStatus.summary?.conflictos?.length ?? 0}
-              </strong>
-            </div>
-
-            {/* 6. Registros No Modificados */}
-            <div className="p-3 bg-slate-50 border border-slate-100 rounded-lg">
-              <span className="block text-[9px] text-slate-400 uppercase font-extrabold tracking-wider">Registros No Modificados</span>
-              <strong className="text-base text-slate-700 font-extrabold block mt-0.5">
-                {syncStatus.summary?.registrosNoModificados ?? syncStatus.errorCount}
-              </strong>
-            </div>
+            <button
+              onClick={exportLoadReport}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-emerald-50 border border-emerald-150 text-[10px] font-extrabold text-emerald-800 rounded-lg transition-colors shadow-4xs"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>Exportar informe de carga</span>
+            </button>
           </div>
 
-          {/* List of Conflicts Ledger */}
-          {syncStatus.summary?.conflictos && syncStatus.summary.conflictos.length > 0 && (
-            <div className="border border-rose-150 rounded-lg bg-rose-50/20 overflow-hidden">
-              <div className="bg-rose-50/70 px-3 py-2 border-b border-rose-150 flex items-center justify-between">
-                <div className="flex items-center gap-1.5 text-rose-800 text-[10px] font-extrabold">
-                  <AlertTriangle className="w-3.5 h-3.5 text-rose-500" />
-                  <span>DETALLE DE CONFLICTOS Y REGISTROS SALVAGUARDADOS</span>
-                </div>
-                <span className="text-[9px] text-rose-500 font-bold bg-rose-100/60 px-1.5 py-0.5 rounded">
-                  No Sobrescritos
-                </span>
-              </div>
-              
-              <div className="divide-y divide-rose-100/50 max-h-56 overflow-y-auto">
-                {syncStatus.summary.conflictos.map((conf: any, idx: number) => (
-                  <div key={idx} className="p-3 text-[10px] space-y-1 bg-white">
-                    <div className="flex items-center justify-between">
-                      <span className="font-extrabold text-slate-700 bg-slate-100 px-1.5 py-0.5 rounded text-[9px]">
-                        Ficha {conf.codigoFicha}
-                      </span>
-                      <span className="text-rose-600 font-extrabold text-[9px] uppercase tracking-wide bg-rose-50 px-1.5 py-0.5 rounded">
-                        {conf.tipoConflicto}
-                      </span>
-                    </div>
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+            {getLoadReportCategories().map(category => {
+              const isActive = activeLoadReportCategory === category.key;
+              const toneClass =
+                category.tone === 'emerald'
+                  ? 'bg-emerald-50/50 border-emerald-100 text-[#39A900]'
+                  : category.tone === 'blue'
+                    ? 'bg-blue-50/35 border-blue-100 text-blue-700'
+                    : category.tone === 'amber'
+                      ? 'bg-amber-50 border-amber-100 text-amber-700'
+                      : category.tone === 'rose' && category.count > 0
+                        ? 'bg-rose-50 border-rose-100 text-rose-600'
+                        : 'bg-slate-50 border-slate-100 text-slate-700';
 
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-slate-600 mt-1">
-                      <div>
-                        <span className="text-[9px] text-slate-400 block font-medium">Instructor en sistema</span>
-                        <span className="font-bold text-slate-700">{conf.instructorExistente}</span>
-                      </div>
-                      <div>
-                        <span className="text-[9px] text-slate-400 block font-medium">Instructor omitido del zip/reporte</span>
-                        <span className="font-bold text-rose-600">{conf.instructorNuevo}</span>
-                      </div>
-                      <div>
-                        <span className="text-[9px] text-slate-400 block font-medium">Rol del reporte</span>
-                        <span className="font-semibold text-slate-700">{conf.rol}</span>
-                      </div>
-                      <div>
-                        <span className="text-[9px] text-slate-400 block font-medium">Área</span>
-                        <span className="font-semibold text-slate-700">{conf.area || 'General'}</span>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
+              return (
+                <button
+                  key={category.key}
+                  onClick={() => setActiveLoadReportCategory(category.key)}
+                  className={`text-left p-3 border rounded-lg transition-all cursor-pointer ${toneClass} ${
+                    isActive ? 'ring-2 ring-slate-900/10 shadow-sm scale-[1.01]' : 'hover:shadow-xs'
+                  }`}
+                >
+                  <span className="block text-[9px] uppercase font-extrabold tracking-wider opacity-75">
+                    {category.label}
+                  </span>
+                  <strong className="text-base font-extrabold block mt-0.5">
+                    {category.count}
+                  </strong>
+                  <span className="block text-[9px] font-bold mt-1 opacity-80">
+                    {isActive ? 'Detalle activo' : 'Ver detalle'} · {category.description}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          {syncStatus.postgresVerification && (
+            <div className="bg-emerald-50 border border-emerald-150 rounded-lg p-3 text-[10px] text-emerald-900 font-semibold">
+              Persistencia verificada en {syncStatus.persistedIn || 'PostgreSQL/Neon'}:
+              {' '}fichas <strong>{syncStatus.postgresVerification.fichas}</strong>,
+              {' '}instructores <strong>{syncStatus.postgresVerification.instructores}</strong>,
+              {' '}relaciones <strong>{syncStatus.postgresVerification.instructor_ficha}</strong>,
+              {' '}aprendices <strong>{syncStatus.postgresVerification.aprendices_fichas}</strong>.
             </div>
           )}
+
+          <div className="border border-slate-200 rounded-lg bg-white overflow-hidden">
+            <div className="bg-slate-50 px-3 py-2 border-b border-slate-200 flex items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5 text-slate-800 text-[10px] font-extrabold">
+                <FileCheck className="w-3.5 h-3.5 text-[#39A900]" />
+                <span>DETALLE DEL INFORME · {getCategoryLabel(activeLoadReportCategory).toUpperCase()}</span>
+              </div>
+              <span className="text-[9px] text-slate-500 font-bold bg-white border border-slate-200 px-1.5 py-0.5 rounded">
+                {getSelectedLoadReportRows().length} registro(s)
+              </span>
+            </div>
+
+            <div className="overflow-x-auto max-h-72">
+              <table className="min-w-full text-[10px]">
+                <thead className="bg-white sticky top-0 z-10 border-b border-slate-100">
+                  <tr className="text-left text-slate-400 uppercase tracking-wide">
+                    <th className="px-3 py-2 font-extrabold">Fila</th>
+                    <th className="px-3 py-2 font-extrabold">Ficha</th>
+                    <th className="px-3 py-2 font-extrabold">Programa</th>
+                    <th className="px-3 py-2 font-extrabold">Instructor</th>
+                    <th className="px-3 py-2 font-extrabold">Correo</th>
+                    <th className="px-3 py-2 font-extrabold">Rol</th>
+                    <th className="px-3 py-2 font-extrabold">Área</th>
+                    <th className="px-3 py-2 font-extrabold">Estado</th>
+                    <th className="px-3 py-2 font-extrabold">Motivo</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {getSelectedLoadReportRows().length === 0 ? (
+                    <tr>
+                      <td colSpan={9} className="px-3 py-6 text-center text-slate-400 font-bold">
+                        No hay registros en esta categoría.
+                      </td>
+                    </tr>
+                  ) : (
+                    getSelectedLoadReportRows().map((row: any, idx: number) => (
+                      <tr key={`${row.category}-${row.rowNumber || idx}-${idx}`} className="hover:bg-slate-50/80">
+                        <td className="px-3 py-2 font-bold text-slate-500">{row.rowNumber || '-'}</td>
+                        <td className="px-3 py-2 font-extrabold text-slate-700">{row.fichaCodigo || row.codigoFicha || '-'}</td>
+                        <td className="px-3 py-2 text-slate-600 max-w-[180px] truncate">{row.programa || '-'}</td>
+                        <td className="px-3 py-2 text-slate-700 font-semibold">{row.instructorNombre || row.instructorNuevo || '-'}</td>
+                        <td className="px-3 py-2 text-slate-500">{row.instructorCorreo || row.correoInstructor || '-'}</td>
+                        <td className="px-3 py-2 text-slate-600">{row.rolEnFicha || row.rol || '-'}</td>
+                        <td className="px-3 py-2 text-slate-600">{row.area || 'General'}</td>
+                        <td className="px-3 py-2">
+                          <span className={`px-1.5 py-0.5 rounded text-[9px] font-extrabold uppercase ${
+                            row.status === 'conflict'
+                              ? 'bg-rose-50 text-rose-700'
+                              : row.status === 'created'
+                                ? 'bg-emerald-50 text-emerald-700'
+                                : row.status === 'updated'
+                                  ? 'bg-amber-50 text-amber-700'
+                                : row.status === 'conserved'
+                                  ? 'bg-blue-50 text-blue-700'
+                                  : 'bg-slate-100 text-slate-600'
+                          }`}>
+                            {row.status || 'registrado'}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2 text-slate-600 min-w-[220px]">
+                          {row.reason || row.motivoDetallado || row.tipoConflicto || '-'}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
         </div>
       )}
 
@@ -1228,9 +1423,9 @@ export default function AdminSection({
           <div className="bg-emerald-50 border border-emerald-250 p-4 rounded-xl flex items-start gap-3 text-xs text-emerald-950 shadow-4xs">
             <GraduationCap className="w-5 h-5 text-[#39A900] shrink-0 mt-0.5" />
             <div className="space-y-1">
-              <span className="font-extrabold font-sans">Cargar Listados de Aprendices por Ficha en Lote:</span>
+              <span className="font-extrabold font-sans">Cargar Reporte de Aprendices por Ficha en Lote:</span>
               <p className="text-slate-655 font-normal leading-relaxed">
-                Suba uno o varios reportes de matrícula o listados oficiales de aprendices inscritos en formato Excel para cada ficha del sistema. El sistema de asignación y sincronización por lote detectará automáticamente los códigos de ficha y los registrará de forma secuencial sin modificaciones manuales.
+                Suba uno o varios reportes de aprendices o listados oficiales de aprendices inscritos en formato Excel para cada ficha del sistema. El sistema de asignación y sincronización por lote detectará automáticamente los códigos de ficha y los registrará de forma secuencial sin modificaciones manuales.
               </p>
             </div>
           </div>
@@ -1276,7 +1471,7 @@ export default function AdminSection({
             <div className="space-y-3.5 animate-fade-in" id="batch-files-list">
               <div className="flex items-center justify-between border-b border-slate-100 pb-2">
                 <h4 className="text-xs font-extrabold text-slate-550 uppercase tracking-wide">
-                  Cola de Procesamiento de Reportes ({batchFiles.length})
+                  Cola de Procesamiento de Reportes de Aprendices ({batchFiles.length})
                 </h4>
                 <button
                   type="button"
@@ -1472,7 +1667,7 @@ export default function AdminSection({
                     >
                       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                         <div className="space-y-0.5">
-                          <span className="text-[10px] uppercase font-black tracking-wider text-slate-400">Reporte Procesado</span>
+                          <span className="text-[10px] uppercase font-black tracking-wider text-slate-400">Reporte de Aprendices Procesado</span>
                           <h5 className="text-xs font-bold text-slate-800 flex items-center gap-1.5 flex-wrap">
                             <span className="truncate max-w-xs">{sum.fileName}</span>
                             <span className="bg-slate-100 text-slate-700 px-2 py-0.5 rounded text-[10px] font-mono font-bold border border-slate-200">
@@ -1536,6 +1731,15 @@ export default function AdminSection({
                             <span>Filas sin aprendices válidos: <strong>{ignoredRows}</strong> ignoradas de forma controlada</span>
                           </div>
 
+                          {sum.postgresVerification && (
+                            <div className="bg-emerald-50 border border-emerald-150 rounded-lg p-2 text-[10px] text-emerald-900 font-semibold">
+                              Persistencia verificada en {sum.persistedIn || 'PostgreSQL/Neon'}:
+                              {' '}fichas <strong>{sum.postgresVerification.fichas}</strong>,
+                              {' '}aprendices <strong>{sum.postgresVerification.aprendices_fichas}</strong>,
+                              {' '}seguimientos <strong>{sum.postgresVerification.seguimientos_historico}</strong>.
+                            </div>
+                          )}
+
                           {/* WARNING IF DETECTED VERY FEW ALUMNI */}
                           {hasFewLearners && (
                             <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 flex items-start gap-2 text-[10px] text-amber-900 mt-2">
@@ -1543,7 +1747,7 @@ export default function AdminSection({
                               <div className="space-y-0.5">
                                 <span className="font-extrabold">⚠️ Alerta de Baja Detección de Aprendices:</span>
                                 <p className="text-slate-655 leading-relaxed font-normal">
-                                  Se han detectado únicamente {sum.validCount} aprendices de {sum.totalRows} filas totales en el archivo. Por favor, verifique si este archivo es efectivamente el reporte de aprendices (Matrícula / Calificaciones) o si ha seleccionado una pestaña o un reporte alternativo. El parser requiere columnas claras del listado (como Documento y Nombre).
+                                  Se han detectado únicamente {sum.validCount} aprendices de {sum.totalRows} filas totales en el archivo. Por favor, verifique si este archivo es efectivamente el reporte de aprendices por ficha o si ha seleccionado una pestaña o un reporte alternativo. El parser requiere columnas claras del listado (como Documento y Nombre).
                                 </p>
                               </div>
                             </div>
