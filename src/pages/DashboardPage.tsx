@@ -1877,10 +1877,10 @@ ${emailCuerpo}`;
                         const mailtoUrl = `mailto:${encodeURIComponent(emailDestinatario)}?subject=${encodeURIComponent(emailAsunto)}&body=${encodeURIComponent(emailCuerpo)}`;
                         window.location.href = mailtoUrl;
                       }}
-                      className="bg-white hover:bg-slate-50 text-slate-700 text-xs font-bold py-1.5 px-3 rounded-lg border border-slate-200 transition-all flex items-center gap-1 cursor-pointer"
+                      className="bg-[#007832] hover:bg-[#005c24] text-white text-xs font-bold py-1.5 px-3 rounded-lg border border-[#005c24] shadow-sm transition-all flex items-center gap-1 cursor-pointer"
                       title="Abrir este correo en Outlook / Gmail"
                     >
-                      <ExternalLink className="w-3.5 h-3.5 text-slate-500" />
+                      <ExternalLink className="w-3.5 h-3.5 text-white" />
                       <span>Abrir correo</span>
                     </button>
                   </div>

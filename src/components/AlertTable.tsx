@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { 
   Search, ArrowUpDown, ChevronDown, ChevronUp, Briefcase, 
   Sparkles, CheckSquare, Square, Filter, FileArchive, Download, Eye, Activity, Mail, Heart, FileText, AlertCircle, MoreVertical,
@@ -2373,8 +2373,21 @@ export function BitacoraLogger({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const [isCurrentActionRegistered, setIsCurrentActionRegistered] = useState(false);
+  const submitInFlightRef = useRef(false);
+
+  const unlockForNewAction = useCallback(() => {
+    setIsCurrentActionRegistered(false);
+    setSuccessMsg(null);
+    setErrorMsg(null);
+    submitInFlightRef.current = false;
+  }, []);
 
   const handleMedioComunicacionChange = (value: string) => {
+    if (value !== medioComunicacion) {
+      unlockForNewAction();
+    }
+
     setMedioComunicacion(value);
 
     if (
@@ -2391,6 +2404,7 @@ export function BitacoraLogger({
   // Sync with respondingToSeguimiento trigger
   useEffect(() => {
     if (respondingToSeguimiento) {
+      unlockForNewAction();
       setTipoRespuesta('Respuesta a llamado por correo');
       setFechaRespuesta(new Date().toISOString().split('T')[0]);
       setRespuestaAprendiz('');
@@ -2398,7 +2412,7 @@ export function BitacoraLogger({
       setProximaAccion('');
       setEstadoFinal('Respondido');
     }
-  }, [respondingToSeguimiento]);
+  }, [respondingToSeguimiento, unlockForNewAction]);
 
   // Set default observations depending on combination
   useEffect(() => {
@@ -2578,6 +2592,11 @@ Servicio Nacional de Aprendizaje (SENA)`;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+
+    if (submitInFlightRef.current || isSubmitting || isCurrentActionRegistered) {
+      return;
+    }
+
     setErrorMsg(null);
     setSuccessMsg(null);
 
@@ -2586,6 +2605,7 @@ Servicio Nacional de Aprendizaje (SENA)`;
       return;
     }
 
+    submitInFlightRef.current = true;
     setIsSubmitting(true);
 
     try {
@@ -2622,6 +2642,7 @@ Acuerdos y compromisos: ${compromisos.trim() || 'Sin acuerdos particulares'}`,
         if (!actualObservacion && tipoSeguimiento !== 'Remisión a Bienestar' && tipoSeguimiento !== 'Plan de mejora') {
           setErrorMsg('La observación o detalle es requerido para continuar.');
           setIsSubmitting(false);
+          submitInFlightRef.current = false;
           return;
         }
 
@@ -2652,36 +2673,31 @@ Acuerdos y compromisos: ${compromisos.trim() || 'Sin acuerdos particulares'}`,
         if (medioComunicacion === 'Correo electrónico') {
           onEnviarLlamado(aprendiz);
           setIsSubmitting(false);
+          submitInFlightRef.current = false;
           return;
         }
       }
 
       await onSave(aprendiz.dbId || Number(aprendiz.id), payload);
+      setIsCurrentActionRegistered(true);
       setSuccessMsg('¡Seguimiento registrado exitosamente en la bitácora!');
       
       if (respondingToSeguimiento) {
         onCancelResponse();
       }
 
-      setAsunto('');
-      setObservacion('');
-      setRespuestaAprendiz('');
-      setCompromisos('');
-      setProximaAccion('');
-      
-      setTimeout(() => {
-        setSuccessMsg(null);
-      }, 3500);
-
     } catch (err: any) {
       console.error('[BITACORA_LOGGER] Save error:', err);
       setErrorMsg(err.message || 'Error al guardar el evento en la bitácora.');
     } finally {
+      submitInFlightRef.current = false;
       setIsSubmitting(false);
     }
   };
 
   const isFormValid = useMemo(() => {
+    if (isSubmitting || isCurrentActionRegistered) return false;
+
     if (respondingToSeguimiento) {
       return !!respuestaAprendiz.trim();
     } else {
@@ -2690,7 +2706,7 @@ Acuerdos y compromisos: ${compromisos.trim() || 'Sin acuerdos particulares'}`,
       if (!fechaEnvioMensaje) return false;
       return !!observacion.trim();
     }
-  }, [respondingToSeguimiento, tipoSeguimiento, medioComunicacion, fechaEnvioMensaje, observacion, respuestaAprendiz]);
+  }, [isSubmitting, isCurrentActionRegistered, respondingToSeguimiento, tipoSeguimiento, medioComunicacion, fechaEnvioMensaje, observacion, respuestaAprendiz]);
 
   const buttonText = useMemo(() => {
     if (respondingToSeguimiento) {
@@ -2704,6 +2720,15 @@ Acuerdos y compromisos: ${compromisos.trim() || 'Sin acuerdos particulares'}`,
     }
     return "Continuar";
   }, [respondingToSeguimiento, medioComunicacion]);
+
+  const registeredConfirmation = (
+    <div className="p-3 bg-emerald-50 text-emerald-900 border border-emerald-200 rounded-lg font-semibold text-xs mb-4 flex items-start gap-2">
+      <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+      <span>
+        El seguimiento ya fue registrado en la bitácora. Para registrar una nueva acción, seleccione otro tipo de comunicación o cierre y abra nuevamente el seguimiento.
+      </span>
+    </div>
+  );
 
   return (
     <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 shadow-sm text-left">
@@ -2752,6 +2777,8 @@ Acuerdos y compromisos: ${compromisos.trim() || 'Sin acuerdos particulares'}`,
         </div>
       )}
 
+      {isCurrentActionRegistered && registeredConfirmation}
+
       <form onSubmit={handleSubmit} className="space-y-4">
         {respondingToSeguimiento ? (
           /* ========================================================= */
@@ -2766,6 +2793,7 @@ Acuerdos y compromisos: ${compromisos.trim() || 'Sin acuerdos particulares'}`,
                 <select
                   value={tipoRespuesta}
                   onChange={e => setTipoRespuesta(e.target.value)}
+                  disabled={isCurrentActionRegistered}
                   className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white font-bold text-slate-800 focus:border-[#007832] focus:ring-1 focus:ring-[#007832] outline-none"
                 >
                   <option value="Respuesta a llamado por correo">Respuesta a llamado por correo</option>
@@ -2786,6 +2814,7 @@ Acuerdos y compromisos: ${compromisos.trim() || 'Sin acuerdos particulares'}`,
                   type="date"
                   value={fechaRespuesta}
                   onChange={e => setFechaRespuesta(e.target.value)}
+                  disabled={isCurrentActionRegistered}
                   className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white font-bold text-slate-800 focus:border-[#007832] focus:ring-1 focus:ring-[#007832] outline-none"
                 />
               </div>
@@ -2797,6 +2826,7 @@ Acuerdos y compromisos: ${compromisos.trim() || 'Sin acuerdos particulares'}`,
                 <select
                   value={estadoFinal}
                   onChange={e => setEstadoFinal(e.target.value)}
+                  disabled={isCurrentActionRegistered}
                   className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white font-bold text-slate-800 focus:border-[#007832] focus:ring-1 focus:ring-[#007832] outline-none"
                 >
                   <option value="Respondido">Respondido</option>
@@ -2818,6 +2848,7 @@ Acuerdos y compromisos: ${compromisos.trim() || 'Sin acuerdos particulares'}`,
                   placeholder="Escribe aquí los argumentos del aprendiz o el resultado del contacto..."
                   value={respuestaAprendiz}
                   onChange={e => setRespuestaAprendiz(e.target.value)}
+                  disabled={isCurrentActionRegistered}
                   required
                   className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white font-semibold text-slate-800 outline-none focus:border-[#007832] focus:ring-1 focus:ring-[#007832] leading-normal font-sans"
                 />
@@ -2832,6 +2863,7 @@ Acuerdos y compromisos: ${compromisos.trim() || 'Sin acuerdos particulares'}`,
                   placeholder="Establece los compromisos de entrega y fechas pactadas..."
                   value={compromisos}
                   onChange={e => setCompromisos(e.target.value)}
+                  disabled={isCurrentActionRegistered}
                   className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white font-semibold text-slate-800 outline-none focus:border-[#007832] focus:ring-1 focus:ring-[#007832] leading-normal font-sans"
                 />
               </div>
@@ -2846,6 +2878,7 @@ Acuerdos y compromisos: ${compromisos.trim() || 'Sin acuerdos particulares'}`,
                 placeholder="Ej. Validar entregas el próximo lunes"
                 value={proximaAccion}
                 onChange={e => setProximaAccion(e.target.value)}
+                disabled={isCurrentActionRegistered}
                 className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white font-semibold text-slate-800 outline-none focus:border-[#007832] focus:ring-1 focus:ring-[#007832]"
               />
             </div>
@@ -2863,7 +2896,7 @@ Acuerdos y compromisos: ${compromisos.trim() || 'Sin acuerdos particulares'}`,
                 )}
                 <button
                   type="submit"
-                  disabled={isSubmitting || !isFormValid}
+                  disabled={isSubmitting || isCurrentActionRegistered || !isFormValid}
                   className={`font-black text-xs py-2 px-5 rounded-lg shadow-sm flex items-center gap-1.5 transition-all cursor-pointer ${
                     isFormValid 
                       ? 'bg-[#007832] hover:bg-[#005c24] text-white' 
@@ -2897,7 +2930,12 @@ Acuerdos y compromisos: ${compromisos.trim() || 'Sin acuerdos particulares'}`,
                 </label>
                 <select
                   value={tipoSeguimiento}
-                  onChange={e => setTipoSeguimiento(e.target.value)}
+                  onChange={e => {
+                    if (e.target.value !== tipoSeguimiento) {
+                      unlockForNewAction();
+                    }
+                    setTipoSeguimiento(e.target.value);
+                  }}
                   className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white font-bold text-slate-800 focus:border-[#007832] focus:ring-1 focus:ring-[#007832] outline-none"
                 >
                   <option value="Comunicación de seguimiento">Comunicación con aprendiz</option>
@@ -2919,7 +2957,7 @@ Acuerdos y compromisos: ${compromisos.trim() || 'Sin acuerdos particulares'}`,
                   <option value="WhatsApp">WhatsApp</option>
                   <option value="Correo electrónico">Correo electrónico / Llamado oficial</option>
                   <option value="Llamada telefónica">Llamada telefónica</option>
-                  <option value="Presencial">Reunión Presencial</option>
+                  <option value="Reunión virtual">Reunión virtual</option>
                   <option value="Otro">Otro medio</option>
                 </select>
               </div>
@@ -2932,6 +2970,7 @@ Acuerdos y compromisos: ${compromisos.trim() || 'Sin acuerdos particulares'}`,
                   type="date"
                   value={fechaEnvioMensaje}
                   onChange={e => setFechaEnvioMensaje(e.target.value)}
+                  disabled={isCurrentActionRegistered}
                   className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white font-bold text-slate-800 focus:border-[#007832] focus:ring-1 focus:ring-[#007832] outline-none"
                 />
               </div>
@@ -3013,6 +3052,7 @@ Acuerdos y compromisos: ${compromisos.trim() || 'Sin acuerdos particulares'}`,
                     }
                     value={observacion}
                     onChange={e => setObservacion(e.target.value)}
+                    disabled={isCurrentActionRegistered}
                     required
                     className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white font-semibold text-slate-800 outline-none focus:border-[#007832] focus:ring-1 focus:ring-[#007832] leading-normal font-sans"
                   />
@@ -3031,7 +3071,7 @@ Acuerdos y compromisos: ${compromisos.trim() || 'Sin acuerdos particulares'}`,
                     )}
                     <button
                       type="submit"
-                      disabled={isSubmitting || !isFormValid}
+                      disabled={isSubmitting || isCurrentActionRegistered || !isFormValid}
                       className={`font-black text-xs py-2 px-5 rounded-lg shadow-sm flex items-center gap-1.5 transition-all cursor-pointer ${
                         isFormValid 
                           ? 'bg-[#007832] hover:bg-[#005c24] text-white' 
