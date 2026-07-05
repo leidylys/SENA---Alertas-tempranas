@@ -13,7 +13,7 @@ import StrategyModal from '../components/StrategyModal';
 import ReportModal from '../components/ReportModal';
 import { useAlertasStore } from '../hooks/useAlertasStore';
 import { auth } from '../lib/firebase.ts';
-import { saveIndividualIntervention, saveBulkIntervention, syncLearnersToDb, saveBitacoraSeguimiento } from '../lib/api.ts';
+import { saveIndividualIntervention, saveBulkIntervention, syncLearnersToDb, saveBitacoraSeguimiento, fetchFichaDetails } from '../lib/api.ts';
 import { leerArchivoExcel, leerArchivoExcel2D, detectarFases, normalizarAprendices, combinarDatos, detectExcelReportType, parseReporteAprendicesExcel } from '../utils/excelParser';
 import { procesarTodosLosAprendices } from '../utils/riskCalculator';
 
@@ -487,7 +487,13 @@ ${emailCuerpo}`;
       const todayISO = new Date().toISOString().split('T')[0];
       const activeToken = await getFreshToken();
 
-      // Update DB and Memory fallback
+      console.log('[PERSISTENCE_DEBUG] Dashboard.handleAprendicesUploadAndSync.datos_formulario', {
+        ficha: fichaInfo.numeroFicha,
+        totalAprendices: list.length,
+        aprendices: list
+      });
+
+      // Update PostgreSQL/Neon through the backend
       const response = await syncLearnersToDb(
         activeToken,
         fichaInfo.numeroFicha,
@@ -498,10 +504,16 @@ ${emailCuerpo}`;
         list,
         todayISO
       );
+      console.log('[PERSISTENCE_DEBUG] Dashboard.handleAprendicesUploadAndSync.respuesta_backend', response);
 
-      const finalLearners = response?.aprendices || list;
+      const reloaded = await fetchFichaDetails(activeToken, fichaInfo.numeroFicha);
+      const finalLearners = reloaded?.aprendices || [];
+      console.log('[PERSISTENCE_DEBUG] Dashboard.handleAprendicesUploadAndSync.consulta_post_guardado', {
+        ficha: fichaInfo.numeroFicha,
+        totalAprendices: finalLearners.length
+      });
 
-      // Re-populate our store while preserving existing phases
+      // Re-populate our store only with data returned by the persisted database read
       store.setDatosCargados(finalLearners, store.fases || []);
 
       // Update current props memory directly
@@ -740,6 +752,12 @@ ${emailCuerpo}`;
 
       // Update database and memory
       const activeToken = await getFreshToken();
+      console.log('[PERSISTENCE_DEBUG] Dashboard.handleTrackingUploadAndSync.datos_formulario', {
+        ficha: fichaInfo.numeroFicha,
+        totalAprendices: recalculatedLearners.length,
+        isCalificaciones: true,
+        aprendices: recalculatedLearners
+      });
       const response = await syncLearnersToDb(
         activeToken,
         fichaInfo.numeroFicha,
@@ -751,10 +769,16 @@ ${emailCuerpo}`;
         todayISO,
         true // isCalificaciones mode
       );
+      console.log('[PERSISTENCE_DEBUG] Dashboard.handleTrackingUploadAndSync.respuesta_backend', response);
 
-      const finalLearners = response?.aprendices || recalculatedLearners;
+      const reloaded = await fetchFichaDetails(activeToken, fichaInfo.numeroFicha);
+      const finalLearners = reloaded?.aprendices || [];
+      console.log('[PERSISTENCE_DEBUG] Dashboard.handleTrackingUploadAndSync.consulta_post_guardado', {
+        ficha: fichaInfo.numeroFicha,
+        totalAprendices: finalLearners.length
+      });
 
-      // Update Zustand state store
+      // Update Zustand state store only with data returned by the persisted database read
       store.setDatosCargados(finalLearners, phasesToUse);
 
       // Update local props memory directly
@@ -1553,6 +1577,7 @@ ${emailCuerpo}`;
         <div className="lg:col-span-9 h-full">
           <AlertTable
             aprendices={store.aprendices}
+            fases={store.fases}
             fichaInfo={fichaInfo}
             selectedIds={store.selectedAprendicesIds}
             filterSearch={store.filterSearch}

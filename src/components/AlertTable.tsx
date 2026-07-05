@@ -4,14 +4,16 @@ import {
   Sparkles, CheckSquare, Square, Filter, FileArchive, Download, Eye, Activity, Mail, Heart, FileText, AlertCircle, MoreVertical,
   Clock, User, Copy, ExternalLink, Check, AlertTriangle, PlusCircle, CheckCircle2, Save, Loader2, Link, Plus, CornerDownRight
 } from 'lucide-react';
-import { Aprendiz, FichaInfo } from '../types';
+import { Aprendiz, Fase, FichaInfo } from '../types';
 import { badgeNivel, badgeEstado, rowColorNivel, formatEvidenciaNombre } from '../utils/formatters';
+import { getEvidenciasSeleccionadas } from '../utils/riskCalculator';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
 import { generarPdfIndividual, generarPdfBienestar, generarPdfPlanMejoramiento } from '../services/pdfGenerator';
 
 interface AlertTableProps {
   aprendices: Aprendiz[];
+  fases: Fase[];
   fichaInfo: FichaInfo;
   selectedIds: string[];
   filterSearch: string;
@@ -149,6 +151,7 @@ function parseLlamadoDetalle(detalleStr: string, fallback: Partial<any> = {}) {
 
 export default function AlertTable({
   aprendices,
+  fases,
   fichaInfo,
   selectedIds,
   filterSearch,
@@ -188,6 +191,13 @@ export default function AlertTable({
   const [causeBienestar, setCauseBienestar] = useState('Inasistencia reiterada superior a 30 días sin justificar');
   const [descriptionBienestar, setDescriptionBienestar] = useState('');
   const [isReferralSent, setIsReferralSent] = useState(false);
+
+  const selectedEvidenceNames = useMemo(() => getEvidenciasSeleccionadas(fases || []), [fases]);
+  const selectedEvidenceSet = useMemo(() => new Set(selectedEvidenceNames), [selectedEvidenceNames]);
+  const getScopedEvidenceEntries = (ap: Aprendiz) => {
+    const entries = Object.entries(ap?.evidencias || {});
+    return entries.filter(([name]) => selectedEvidenceSet.has(name));
+  };
   const [trackingIdBienestar, setTrackingIdBienestar] = useState('');
 
   // Form states for Plan de Mejoramiento Modal
@@ -458,8 +468,7 @@ export default function AlertTable({
   const pendingEvidencesList = useMemo(() => {
     if (!selectedLearnerForEvidences) return [];
     
-    const evs = selectedLearnerForEvidences.evidencias || {};
-    return Object.entries(evs).map(([header, value]) => {
+    return getScopedEvidenceEntries(selectedLearnerForEvidences).map(([header, value]) => {
       let valStr = '';
       let detail: any = null;
       if (typeof value === 'object' && value !== null) {
@@ -469,7 +478,7 @@ export default function AlertTable({
         valStr = String(value);
       }
       
-      if (valStr === '-') {
+      if (valStr === 'D' || valStr === '-') {
         if (detail) {
           return {
             nombre: detail.nombre || header,
@@ -477,7 +486,7 @@ export default function AlertTable({
             actividadProyecto: detail.actividadProyecto || 'Sin Actividad',
             fase: detail.fase || 'Fase de Formación',
             tipo: detail.tipo || 'Evidencia',
-            estado: 'Pendiente'
+            estado: valStr
           };
         } else {
           const norm = header.toLowerCase();
@@ -510,13 +519,13 @@ export default function AlertTable({
             actividadProyecto: act,
             fase: 'Fase de Formación',
             tipo,
-            estado: 'Pendiente'
+            estado: valStr
           };
         }
       }
       return null;
     }).filter(Boolean);
-  }, [selectedLearnerForEvidences]);
+  }, [selectedLearnerForEvidences, selectedEvidenceSet]);
 
   // Group the pending list by Fase and Actividad de Proyecto
   const groupedPendingEvidences = useMemo(() => {
@@ -545,8 +554,7 @@ export default function AlertTable({
   const modalEvidencesList = useMemo(() => {
     if (!selectedLearnerForEvidences) return [];
     
-    const evs = selectedLearnerForEvidences.evidencias || {};
-    return Object.entries(evs).map(([header, value]) => {
+    return getScopedEvidenceEntries(selectedLearnerForEvidences).map(([header, value]) => {
       let valStr = '';
       let detail: any = null;
       if (typeof value === 'object' && value !== null) {
@@ -600,7 +608,7 @@ export default function AlertTable({
         };
       }
     });
-  }, [selectedLearnerForEvidences]);
+  }, [selectedLearnerForEvidences, selectedEvidenceSet]);
 
   const filteredModalEvidencesList = useMemo(() => {
     if (modalStateFilter === 'Todas') {
@@ -643,7 +651,7 @@ export default function AlertTable({
   // Helper getters for metrics
   const getDCount = (ap: Aprendiz) => {
     if (!ap || !ap.evidencias) return 0;
-    return Object.values(ap.evidencias).filter(v => {
+    return getScopedEvidenceEntries(ap).filter(([, v]) => {
       const valStr = v && typeof v === 'object' ? (v as any).estado : String(v);
       return valStr === 'D';
     }).length;
@@ -651,15 +659,17 @@ export default function AlertTable({
 
   const getNoEntregasCount = (ap: Aprendiz) => {
     if (!ap || !ap.evidencias) return 0;
-    return Object.values(ap.evidencias).filter(v => {
+    return getScopedEvidenceEntries(ap).filter(([, v]) => {
       const valStr = v && typeof v === 'object' ? (v as any).estado : String(v);
       return valStr === '-';
     }).length;
   };
 
+  const getPendingCount = (ap: Aprendiz) => getDCount(ap) + getNoEntregasCount(ap);
+
   const getACount = (ap: Aprendiz) => {
     if (!ap || !ap.evidencias) return 0;
-    return Object.values(ap.evidencias).filter(v => {
+    return getScopedEvidenceEntries(ap).filter(([, v]) => {
       const valStr = v && typeof v === 'object' ? (v as any).estado : String(v);
       return valStr === 'A';
     }).length;
@@ -667,7 +677,7 @@ export default function AlertTable({
 
   const getTotalCount = (ap: Aprendiz) => {
     if (!ap || !ap.evidencias) return 0;
-    return Object.keys(ap.evidencias).length;
+    return getScopedEvidenceEntries(ap).length;
   };
 
   // Filter and sort learners
@@ -925,7 +935,7 @@ export default function AlertTable({
                 const isExpanded = expandedDocIds.includes(ap.documento);
                 const isChecked = selectedIds.includes(ap.documento);
                 const showFicha = ap.numeroFicha || (fichaInfo && fichaInfo.numeroFicha);
-                const pendingCount = getNoEntregasCount(ap);
+                const pendingCount = getPendingCount(ap);
 
                 return (
                   <React.Fragment key={ap.documento}>
@@ -1670,7 +1680,7 @@ export default function AlertTable({
                               totalEv={getTotalCount(ap)}
                               approvedEv={getACount(ap)}
                               disapprovedEv={getDCount(ap)}
-                              pendingEv={getNoEntregasCount(ap)}
+                              pendingEv={getPendingCount(ap)}
                               onEnviarLlamado={onEnviarLlamado}
                               onTriggerRemitirBienestar={(ap) => {
                                 setBienestarReferralLearner(ap);
@@ -1902,7 +1912,7 @@ export default function AlertTable({
                       : 'bg-white border-slate-150 text-slate-750 hover:border-amber-300 hover:bg-amber-50/10 hover:scale-[1.01]'
                   }`}
                 >
-                  <div className={`text-[10px] uppercase font-black tracking-wider ${modalStateFilter === '-' ? 'text-amber-800' : 'text-slate-500'}`}>Pendientes (-)</div>
+                  <div className={`text-[10px] uppercase font-black tracking-wider ${modalStateFilter === '-' ? 'text-amber-800' : 'text-slate-500'}`}>No entregadas (-)</div>
                   <div className="text-lg font-black tracking-tight mt-1">{getNoEntregasCount(selectedLearnerForEvidences)}</div>
                 </button>
               </div>
@@ -1920,7 +1930,7 @@ export default function AlertTable({
                     {modalStateFilter === 'Todas' ? 'Todas las evidencias' :
                      modalStateFilter === 'A' ? 'Solo Aprobadas (A)' :
                      modalStateFilter === 'D' ? 'Solo Desaprobadas (D)' :
-                     'Solo Pendientes (-)'}
+                    'Solo no entregadas (-)'}
                   </span>
                 </div>
               </div>
@@ -2243,7 +2253,7 @@ export default function AlertTable({
                     <span className="font-bold text-emerald-700">Ficha:</span> {fichaInfo.numeroFicha}
                   </div>
                   <div>
-                    <span className="font-bold text-emerald-700">Pendientes:</span> {getNoEntregasCount(improvementPlanLearner)} evidencias pendientes
+                    <span className="font-bold text-emerald-700">Pendientes:</span> {getPendingCount(improvementPlanLearner)} evidencias pendientes
                   </div>
                 </div>
 

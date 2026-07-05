@@ -35,6 +35,16 @@ function getPhaseMarkerIndex(header: string): number | null {
   return phaseNumber - 1;
 }
 
+function getPhaseNameFromEvidenceCode(evidenceCode: string): string {
+  const gaMatch = String(evidenceCode || '').match(/^GA(\d+)/i);
+  const gaNumber = gaMatch ? Number(gaMatch[1]) : NaN;
+  if (gaNumber === 1 || gaNumber === 2) return 'Análisis';
+  if (gaNumber >= 3 && gaNumber <= 5) return 'Planeación';
+  if (gaNumber >= 6 && gaNumber <= 10) return 'Ejecución';
+  if (gaNumber === 11) return 'Evaluación';
+  return '';
+}
+
 /**
  * Robustly tries to extract learner's name from a row object.
  */
@@ -233,7 +243,7 @@ export function desglosarEvidencia(header: string, faseNombre: string) {
     nombre: header,
     codigo,
     actividadProyecto,
-    fase: faseNombre,
+    fase: getPhaseNameFromEvidenceCode(codigo) || faseNombre,
     tipo,
   };
 }
@@ -406,8 +416,12 @@ export function detectarFases(headers: string[]): Fase[] {
     const evidenceCode = getEvidenceCode(header);
     if (!evidenceCode || seenCodes.has(evidenceCode)) continue;
 
+    const phaseFromGa = getPhaseNameFromEvidenceCode(evidenceCode);
+    const phaseIndexFromGa = phaseBuckets.findIndex(phase => phase.nombre === phaseFromGa);
+    const targetPhase = phaseIndexFromGa >= 0 ? phaseBuckets[phaseIndexFromGa] : phaseBuckets[currentPhaseIndex];
+
     seenCodes.add(evidenceCode);
-    phaseBuckets[currentPhaseIndex].evidencias.push({
+    targetPhase.evidencias.push({
       nombre: header,
       selected: true
     });
@@ -437,7 +451,7 @@ export function construirFasesDesdeEvidencias(aprendices: Aprendiz[]): Fase[] {
       if (!evidenceCode || seenCodes.has(evidenceCode)) return;
 
       const detail = typeof value === 'object' && value !== null ? value as any : {};
-      const phaseName = String(detail.fase || '').trim();
+      const phaseName = getPhaseNameFromEvidenceCode(evidenceCode) || String(detail.fase || '').trim();
       const phaseIndex = ['Análisis', 'Planeación', 'Ejecución', 'Evaluación']
         .findIndex(name => normalizeKey(name) === normalizeKey(phaseName));
       const targetPhase = phaseIndex >= 0 ? phaseBuckets[phaseIndex] : fallbackPhase;

@@ -1,5 +1,5 @@
-import React from 'react';
-import { Layers, AlertTriangle, CheckSquare, Square, Info } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { ChevronDown, ChevronRight, Layers, AlertTriangle, Info } from 'lucide-react';
 import { Fase } from '../types';
 import { formatEvidenciaNombre } from '../utils/formatters';
 
@@ -18,6 +18,14 @@ export default function PhaseSelector({
   onToggleEvidencia,
   onAplicarSeguimiento
 }: PhaseSelectorProps) {
+  const [expandedPhaseIds, setExpandedPhaseIds] = useState<string[]>([]);
+
+  useEffect(() => {
+    setExpandedPhaseIds(prev => {
+      if (prev.length > 0 || fases.length === 0) return prev;
+      return [fases[0].id];
+    });
+  }, [fases]);
   
   // Total checked check helper
   const getSelectedCount = (fase: Fase) => {
@@ -50,6 +58,12 @@ export default function PhaseSelector({
         onToggleEvidencia(fase.id, ev.nombre);
       }
     });
+  };
+
+  const togglePhaseExpanded = (faseId: string) => {
+    setExpandedPhaseIds(prev =>
+      prev.includes(faseId) ? prev.filter(id => id !== faseId) : [...prev, faseId]
+    );
   };
 
   return (
@@ -98,33 +112,44 @@ export default function PhaseSelector({
               const totalCount = fase.evidencias.length;
               const isAllSelected = selectedCount === totalCount;
               const isSomeSelected = selectedCount > 0 && selectedCount < totalCount;
+              const isExpanded = expandedPhaseIds.includes(fase.id);
 
               return (
                 <div key={fase.id} className="border border-slate-150 rounded-lg overflow-hidden bg-slate-50/50">
                   {/* Phase Row Header */}
                   <div className="flex items-center justify-between px-3 py-2 bg-slate-100/70 border-b border-slate-150">
-                    <label className="flex items-center gap-2 cursor-pointer select-none font-semibold text-xs text-slate-800">
-                      <input
-                        type="checkbox"
-                        checked={fase.selected && isAllSelected}
-                        ref={(el) => {
-                          if (el) {
-                            el.indeterminate = isSomeSelected;
-                          }
-                        }}
-                        onChange={() => onToggleFase(fase.id)}
-                        className="rounded border-slate-300 text-sena-600 focus:ring-sena-500 w-3.5 h-3.5"
-                      />
-                      <span className="truncate max-w-[150px]" title={fase.nombre}>
-                        {fase.nombre}
-                      </span>
-                    </label>
+                    <div className="flex items-center gap-2 min-w-0">
+                      <button
+                        type="button"
+                        onClick={() => togglePhaseExpanded(fase.id)}
+                        className="p-0.5 rounded hover:bg-slate-200 text-slate-600 cursor-pointer"
+                        title={isExpanded ? 'Contraer fase' : 'Expandir fase'}
+                      >
+                        {isExpanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+                      </button>
+                      <label className="flex items-center gap-2 cursor-pointer select-none font-semibold text-xs text-slate-800 min-w-0">
+                        <input
+                          type="checkbox"
+                          checked={fase.selected && isAllSelected}
+                          ref={(el) => {
+                            if (el) {
+                              el.indeterminate = isSomeSelected;
+                            }
+                          }}
+                          onChange={() => onToggleFase(fase.id)}
+                          className="rounded border-slate-300 text-sena-600 focus:ring-sena-500 w-3.5 h-3.5"
+                        />
+                        <span className="truncate max-w-[150px]" title={fase.nombre}>
+                          {fase.nombre}
+                        </span>
+                      </label>
+                    </div>
                     <span className="text-[10px] bg-slate-200 text-slate-700 px-1.5 py-0.5 rounded-full font-bold shrink-0">
                       {selectedCount}/{totalCount}
                     </span>
                   </div>
 
-                  <div className="p-2.5 space-y-3 bg-white">
+                  {isExpanded && <div className="p-2.5 space-y-3 bg-white">
                     {Object.entries(groupByGa(fase)).map(([gaCode, evidencias]) => {
                       const selectedGaCount = evidencias.filter(ev => ev.selected && fase.selected).length;
                       const isGaAllSelected = selectedGaCount === evidencias.length;
@@ -170,7 +195,7 @@ export default function PhaseSelector({
                         </div>
                       );
                     })}
-                  </div>
+                  </div>}
                 </div>
               );
             })
