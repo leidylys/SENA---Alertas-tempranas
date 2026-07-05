@@ -90,6 +90,7 @@ export default function DashboardPage({
   const [isSendingLlamado, setIsSendingLlamado] = useState(false);
   const [llamadoSuccessMessage, setLlamadoSuccessMessage] = useState('');
   const [llamadoError, setLlamadoError] = useState<string | null>(null);
+  const [onLlamadoRegistered, setOnLlamadoRegistered] = useState<(() => void) | null>(null);
   const [copied, setCopied] = useState(false);
   
   // Strategy targets (either singular learner or mass block)
@@ -129,8 +130,19 @@ export default function DashboardPage({
   }, [isAdmin]);
 
   // Trigger email called alert modal
-  const triggerEnviarLlamadoModal = (ap: Aprendiz) => {
+  const closeLlamadoModal = () => {
+    setIsLlamadoOpen(false);
+    setSelectedAprendizLlamado(null);
+    setOnLlamadoRegistered(null);
+  };
+
+  const triggerEnviarLlamadoModal = (ap: Aprendiz, onRegistered?: () => void) => {
     setSelectedAprendizLlamado(ap);
+    if (onRegistered) {
+      setOnLlamadoRegistered(() => onRegistered);
+    } else {
+      setOnLlamadoRegistered(null);
+    }
     setEmailDestinatario(ap.correo || '');
 
     const getACountLocal = (learner: Aprendiz) => {
@@ -436,10 +448,11 @@ ${emailCuerpo}`;
           returnedLlamado
         );
 
+        onLlamadoRegistered?.();
+        setOnLlamadoRegistered(null);
         setLlamadoSuccessMessage(`¡${ordinalLabel} registrado con éxito! El estado del aprendiz se actualizó a "En seguimiento".`);
         setTimeout(() => {
-          setIsLlamadoOpen(false);
-          setSelectedAprendizLlamado(null);
+          closeLlamadoModal();
         }, 2000);
       } else {
         setLlamadoError(result.error || 'Error al registrar el llamado de atención');
@@ -1633,7 +1646,7 @@ ${emailCuerpo}`;
               </div>
               <button 
                 type="button" 
-                onClick={() => setIsLlamadoOpen(false)}
+                onClick={closeLlamadoModal}
                 className="p-1 hover:bg-white/10 rounded-full transition-colors text-white"
               >
                 <X className="w-5 h-5" />
@@ -1855,16 +1868,16 @@ ${emailCuerpo}`;
                         setCopied(true);
                         setTimeout(() => setCopied(false), 2000);
                       }}
-                      className="bg-white hover:bg-slate-50 text-slate-700 text-xs font-bold py-1.5 px-3 rounded-lg border border-slate-200 transition-all flex items-center gap-1 cursor-pointer"
+                      className="bg-slate-700 hover:bg-slate-800 text-white text-xs font-bold py-1.5 px-3 rounded-lg border border-slate-800 shadow-sm transition-all flex items-center gap-1 cursor-pointer"
                     >
                       {copied ? (
                         <>
-                          <Check className="w-3.5 h-3.5 text-emerald-600" />
-                          <span className="text-emerald-700">Copiado</span>
+                          <Check className="w-3.5 h-3.5 text-white" />
+                          <span>Copiado</span>
                         </>
                       ) : (
                         <>
-                          <Copy className="w-3.5 h-3.5 text-slate-500" />
+                          <Copy className="w-3.5 h-3.5 text-white" />
                           <span>Copiar texto</span>
                         </>
                       )}
@@ -1888,7 +1901,7 @@ ${emailCuerpo}`;
                   <div className="flex gap-2">
                     <button
                       type="button"
-                      onClick={() => setIsLlamadoOpen(false)}
+                      onClick={closeLlamadoModal}
                       className="bg-white hover:bg-slate-50 text-slate-600 text-xs font-bold py-1.5 px-4 rounded-lg border border-slate-200 transition-all cursor-pointer"
                     >
                       Cancelar

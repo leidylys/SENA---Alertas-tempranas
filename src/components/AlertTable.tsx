@@ -32,7 +32,7 @@ interface AlertTableProps {
   onToggleSelectAll: (filteredIds: string[]) => void;
   onIntervenirIndividual: (aprendiz: Aprendiz) => void;
   onIntervenirMasivo: (aprendices: Aprendiz[]) => void;
-  onEnviarLlamado: (aprendiz: Aprendiz) => void;
+  onEnviarLlamado: (aprendiz: Aprendiz, onRegistered?: () => void) => void;
   onSaveBitacoraSeguimiento?: (aprendizDbId: number, data: any) => Promise<any>;
 }
 
@@ -2334,7 +2334,7 @@ interface BitacoraLoggerProps {
   approvedEv: number;
   disapprovedEv: number;
   pendingEv: number;
-  onEnviarLlamado: (aprendiz: Aprendiz) => void;
+  onEnviarLlamado: (aprendiz: Aprendiz, onRegistered?: () => void) => void;
   onTriggerRemitirBienestar: (aprendiz: Aprendiz) => void;
   onTriggerPlanMejora: (aprendiz: Aprendiz) => void;
   respondingToSeguimiento: { parentId: string; label: string } | null;
@@ -2383,6 +2383,22 @@ export function BitacoraLogger({
     submitInFlightRef.current = false;
   }, []);
 
+  const markCurrentActionRegistered = useCallback(() => {
+    setIsCurrentActionRegistered(true);
+    setSuccessMsg('¡Seguimiento registrado exitosamente en la bitácora!');
+    setErrorMsg(null);
+    submitInFlightRef.current = false;
+    setIsSubmitting(false);
+  }, []);
+
+  const openLlamadoModal = useCallback(() => {
+    if (submitInFlightRef.current || isCurrentActionRegistered) {
+      return;
+    }
+
+    onEnviarLlamado(aprendiz, markCurrentActionRegistered);
+  }, [aprendiz, isCurrentActionRegistered, markCurrentActionRegistered, onEnviarLlamado]);
+
   const handleMedioComunicacionChange = (value: string) => {
     if (value !== medioComunicacion) {
       unlockForNewAction();
@@ -2397,7 +2413,7 @@ export function BitacoraLogger({
     ) {
       setErrorMsg(null);
       setSuccessMsg(null);
-      onEnviarLlamado(aprendiz);
+      onEnviarLlamado(aprendiz, markCurrentActionRegistered);
     }
   };
 
@@ -2671,7 +2687,7 @@ Acuerdos y compromisos: ${compromisos.trim() || 'Sin acuerdos particulares'}`,
         };
 
         if (medioComunicacion === 'Correo electrónico') {
-          onEnviarLlamado(aprendiz);
+          openLlamadoModal();
           setIsSubmitting(false);
           submitInFlightRef.current = false;
           return;
