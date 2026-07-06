@@ -1571,7 +1571,7 @@ async function startServer() {
         fichasCreadas: 0,
         fichasActualizadas: 0,
         instructoresCreados: 0,
-        instructoresActualizados: 0,
+        instructoresModificados: 0,
         relacionesCreadas: 0,
         relacionesConservadas: 0
       };
@@ -1940,7 +1940,7 @@ async function startServer() {
                   rol: cleanRol
                 })
                 .where(eq(instructores.id, instructorId));
-              pgSummary.instructoresActualizados++;
+              pgSummary.instructoresModificados++;
             } else {
               const newInstructor = await db.insert(instructores)
                 .values({
@@ -2069,7 +2069,7 @@ async function startServer() {
 
       const detailedSummary = {
         instructoresCreados: detailBuckets.instructoresCreados.length,
-        instructoresActualizados: pgSummary.instructoresActualizados,
+        instructoresModificados: pgSummary.instructoresModificados,
         fichasCreadas: detailBuckets.fichasCreadas.length,
         fichasActualizadas: pgSummary.fichasActualizadas,
         programasCreados: pgSummary.programasCreados,
@@ -3601,8 +3601,7 @@ ${mensaje}`;
         detalleEvidenciasPendientes,
         creadoPorNombre,
         creadoPorRol,
-        origenRegistro,
-        parentSeguimientoId
+        origenRegistro
       } = req.body;
 
       // Find the student in PostgreSQL. memoryDb is not valid persistence.
@@ -3648,6 +3647,13 @@ ${mensaje}`;
           nextIntervention = 'Cerrado';
         } else if (uiState === 'Remitido a Bienestar') {
           nextIntervention = 'Remitido a Bienestar';
+        } else if (
+          uiState === 'Pendiente de atención por Bienestar' ||
+          uiState === 'En seguimiento por Bienestar' ||
+          uiState === 'Atendido por Bienestar' ||
+          uiState === 'Contacto fallido'
+        ) {
+          nextIntervention = uiState;
         } else if (uiState === 'Acuerdo establecido' || uiState === 'Intervenido') {
           nextIntervention = 'Intervenido';
         } else {
@@ -3656,10 +3662,32 @@ ${mensaje}`;
       } else {
         if (tipoSeguimiento === 'Cierre del caso') {
           nextIntervention = 'Cerrado';
-        } else if (tipoSeguimiento === 'Remitido a Bienestar') {
+        } else if (tipoSeguimiento === 'Remitido a Bienestar' || tipoSeguimiento === 'Remisión a Bienestar') {
           nextIntervention = 'Remitido a Bienestar';
         } else if (tipoSeguimiento === 'Llamado académico' || tipoSeguimiento === 'Plan de mejora' || tipoSeguimiento === 'Acuerdo académico') {
           nextIntervention = 'En seguimiento';
+        }
+      }
+
+      if (tipoSeguimiento === 'Remisión a Bienestar') {
+        const targetDate = fechaEnvioMensaje || new Date().toISOString().split('T')[0];
+        const existingReferrals = await db.select()
+          .from(seguimientosHistorico)
+          .where(and(
+            eq(seguimientosHistorico.aprendizFichaId, pgStudent.id),
+            eq(seguimientosHistorico.instructorId, insId),
+            eq(seguimientosHistorico.tipoSeguimiento, 'Remisión a Bienestar')
+          ));
+        const duplicatedReferral = existingReferrals.some((log: any) => {
+          const logDate = log.fechaEnvioMensaje || (log.fecha ? new Date(log.fecha).toISOString().split('T')[0] : '');
+          return logDate === targetDate;
+        });
+
+        if (duplicatedReferral) {
+          return res.status(409).json({
+            success: false,
+            error: 'Esta remisión ya fue registrada previamente.'
+          });
         }
       }
 
@@ -3709,8 +3737,7 @@ ${mensaje}`;
             creadoPorNombre: creadoPorNombre || insRecord.nombre,
             creadoPorRol: creadoPorRol || insRecord.rol,
             editablePorRol: insRecord.rol,
-            origenRegistro: origenRegistro || 'Instructor',
-            parentSeguimientoId: parentSeguimientoId ? Number(parentSeguimientoId) : null
+            origenRegistro: origenRegistro || 'Instructor'
           })
           .returning({ id: seguimientosHistorico.id });
 
@@ -3767,8 +3794,7 @@ ${mensaje}`;
           creadoPorNombre: creadoPorNombre || insRecord.nombre,
           creadoPorRol: creadoPorRol || insRecord.rol,
           editablePorRol: insRecord.rol,
-          origenRegistro: origenRegistro || 'Instructor',
-          parentSeguimientoId: parentSeguimientoId ? Number(parentSeguimientoId) : null
+          origenRegistro: origenRegistro || 'Instructor'
         });
 
       }
@@ -3805,8 +3831,7 @@ ${mensaje}`;
           evidenciasDesaprobadas: Number(evidenciasDesaprobadas || 0),
           origenRegistro: origenRegistro || 'Instructor',
           creadoPorNombre: creadoPorNombre || insRecord.nombre,
-          usuarioResponsableNombre: insRecord.nombre,
-          parentSeguimientoId: parentSeguimientoId ? Number(parentSeguimientoId) : null
+          usuarioResponsableNombre: insRecord.nombre
         }
       });
 
@@ -3865,8 +3890,7 @@ ${mensaje}`;
           creadoPorNombre: seguimientosHistorico.creadoPorNombre,
           creadoPorRol: seguimientosHistorico.creadoPorRol,
           editablePorRol: seguimientosHistorico.editablePorRol,
-          origenRegistro: seguimientosHistorico.origenRegistro,
-          parentSeguimientoId: seguimientosHistorico.parentSeguimientoId
+          origenRegistro: seguimientosHistorico.origenRegistro
         })
         .from(seguimientosHistorico)
         .leftJoin(instructores, eq(seguimientosHistorico.instructorId, instructores.id))
@@ -3910,8 +3934,7 @@ ${mensaje}`;
           creadoPorNombre: log.creadoPorNombre,
           creadoPorRol: log.creadoPorRol,
           editablePorRol: log.editablePorRol,
-          origenRegistro: log.origenRegistro,
-          parentSeguimientoId: log.parentSeguimientoId
+          origenRegistro: log.origenRegistro
         }));
 
         return res.json({ success: true, seguimientos: normalizedLogs });
@@ -3961,8 +3984,7 @@ ${mensaje}`;
             creadoPorNombre: log.creadoPorNombre,
             creadoPorRol: log.creadoPorRol,
             editablePorRol: log.editablePorRol,
-            origenRegistro: log.origenRegistro,
-            parentSeguimientoId: log.parentSeguimientoId
+            origenRegistro: log.origenRegistro
           };
         });
 
@@ -4058,7 +4080,176 @@ ${mensaje}`;
     }
   });
 
-  // 11. Fetch critical alerts escalated to administrative area
+  // 11. Fetch Bienestar referrals registered as regular bitacora entries
+  app.get('/api/administrativo/remisiones-bienestar', requireAuth, async (req: AuthRequest, res) => {
+    try {
+      try {
+        const referralRows = await db.select({
+          id: seguimientosHistorico.id,
+          aprendizFichaId: seguimientosHistorico.aprendizFichaId,
+          instructorId: seguimientosHistorico.instructorId,
+          fecha: seguimientosHistorico.fecha,
+          estadoNuevo: seguimientosHistorico.estadoNuevo,
+          detalles: seguimientosHistorico.detalles,
+          tipoSeguimiento: seguimientosHistorico.tipoSeguimiento,
+          medioComunicacion: seguimientosHistorico.medioComunicacion,
+          fechaRegistro: seguimientosHistorico.fechaRegistro,
+          fechaEnvioMensaje: seguimientosHistorico.fechaEnvioMensaje,
+          asunto: seguimientosHistorico.asunto,
+          observacion: seguimientosHistorico.observacion,
+          acuerdosEstablecidos: seguimientosHistorico.acuerdosEstablecidos,
+          compromisos: seguimientosHistorico.compromisos,
+          proximaAccion: seguimientosHistorico.proximaAccion,
+          creadoPorNombre: seguimientosHistorico.creadoPorNombre,
+          creadoPorRol: seguimientosHistorico.creadoPorRol,
+          origenRegistro: seguimientosHistorico.origenRegistro,
+          aprendizNombre: aprendicesFichas.nombre,
+          aprendizDocumento: aprendicesFichas.documento,
+          aprendizCorreo: aprendicesFichas.correo,
+          aprendizTelefono: aprendicesFichas.telefono,
+          nivelRiesgo: aprendicesFichas.nivelRiesgo,
+          estadoIntervencion: aprendicesFichas.estadoIntervencion,
+          diasSinAcceso: aprendicesFichas.diasSinAcceso,
+          evidenciasPendientes: sql<number>`0`,
+          fichaCodigo: fichas.codigoFicha,
+          programaNombre: programasFormacion.nombre,
+          instructorNombre: instructores.nombre,
+          instructorCorreo: instructores.correo,
+          instructorRol: instructores.rol
+        })
+        .from(seguimientosHistorico)
+        .leftJoin(aprendicesFichas, eq(seguimientosHistorico.aprendizFichaId, aprendicesFichas.id))
+        .leftJoin(fichas, eq(aprendicesFichas.fichaId, fichas.id))
+        .leftJoin(programasFormacion, eq(fichas.programaId, programasFormacion.id))
+        .leftJoin(instructores, eq(seguimientosHistorico.instructorId, instructores.id))
+        .where(eq(seguimientosHistorico.tipoSeguimiento, 'Remisión a Bienestar'))
+        .orderBy(desc(seguimientosHistorico.fecha));
+
+        const remisiones = await Promise.all(referralRows.map(async (row: any) => {
+          const learnerHistory = await db.select({
+            id: seguimientosHistorico.id,
+            fecha: seguimientosHistorico.fecha,
+            tipoSeguimiento: seguimientosHistorico.tipoSeguimiento,
+            medioComunicacion: seguimientosHistorico.medioComunicacion,
+            observacion: seguimientosHistorico.observacion,
+            detalles: seguimientosHistorico.detalles,
+            estadoNuevo: seguimientosHistorico.estadoNuevo,
+            creadoPorNombre: seguimientosHistorico.creadoPorNombre,
+            creadoPorRol: seguimientosHistorico.creadoPorRol,
+            origenRegistro: seguimientosHistorico.origenRegistro
+          })
+          .from(seguimientosHistorico)
+          .where(eq(seguimientosHistorico.aprendizFichaId, row.aprendizFichaId))
+          .orderBy(desc(seguimientosHistorico.fecha));
+
+          const historialCompartido = learnerHistory.map((log: any) => ({
+            id: String(log.id),
+            fecha: log.fecha ? log.fecha.toISOString().split('T')[0] : '',
+            tipoSeguimiento: log.tipoSeguimiento,
+            medioComunicacion: log.medioComunicacion,
+            observacion: log.observacion || log.detalles,
+            estadoNuevo: log.estadoNuevo,
+            creadoPorNombre: log.creadoPorNombre,
+            creadoPorRol: log.creadoPorRol,
+            origenRegistro: log.origenRegistro
+          }));
+
+          const ultimaIntervencion = historialCompartido.find((log: any) =>
+            log.tipoSeguimiento === 'Intervención de Bienestar' ||
+            log.medioComunicacion === 'Gestión interna de Bienestar' ||
+            log.origenRegistro === 'Bienestar'
+          );
+
+          return {
+            id: String(row.id),
+            aprendizFichaId: row.aprendizFichaId,
+            aprendizNombre: row.aprendizNombre || 'Aprendiz',
+            aprendizDocumento: row.aprendizDocumento || '',
+            aprendizCorreo: row.aprendizCorreo || '',
+            aprendizTelefono: row.aprendizTelefono || '',
+            fichaCodigo: row.fichaCodigo || '',
+            programaNombre: row.programaNombre || '',
+            instructorNombre: row.creadoPorNombre || row.instructorNombre || 'Instructor',
+            instructorCorreo: row.instructorCorreo || '',
+            instructorRol: row.creadoPorRol || row.instructorRol || '',
+            fechaRemision: row.fechaEnvioMensaje || (row.fecha ? row.fecha.toISOString().split('T')[0] : ''),
+            nivelRiesgo: row.nivelRiesgo || '',
+            evidenciasPendientes: row.evidenciasPendientes || 0,
+            diasSinAcceso: row.diasSinAcceso || 0,
+            estadoRemision: ultimaIntervencion?.estadoNuevo || row.estadoIntervencion || row.estadoNuevo || 'Pendiente de atención por Bienestar',
+            observacion: row.observacion || row.detalles || '',
+            asunto: row.asunto || 'Remisión a Bienestar',
+            ultimaActuacion: ultimaIntervencion?.observacion || row.proximaAccion || 'Pendiente de atención por Bienestar',
+            historialCompartido
+          };
+        }));
+
+        return res.json({ success: true, remisiones });
+      } catch (dbErr: any) {
+        console.warn('Postgres fetch remisiones-bienestar fallback (memoryDb used):', dbErr.message);
+
+        const referralLogs = memoryDb.seguimientosHistorico
+          .filter((log: any) => log.tipoSeguimiento === 'Remisión a Bienestar')
+          .sort((a: any, b: any) => b.fecha.getTime() - a.fecha.getTime());
+
+        const remisiones = referralLogs.map((log: any) => {
+          const student = memoryDb.aprendicesFichas.find((ap: any) => ap.id === log.aprendizFichaId);
+          const ficha = student ? memoryDb.fichas.find((f: any) => f.id === student.fichaId) : null;
+          const programa = ficha ? memoryDb.programasFormacion.find((p: any) => p.id === ficha.programaId) : null;
+          const inst = memoryDb.instructores.find((i: any) => i.id === log.instructorId);
+          const learnerHistory = memoryDb.seguimientosHistorico
+            .filter((hist: any) => hist.aprendizFichaId === log.aprendizFichaId)
+            .sort((a: any, b: any) => b.fecha.getTime() - a.fecha.getTime());
+          const historialCompartido = learnerHistory.map((hist: any) => ({
+            id: String(hist.id),
+            fecha: hist.fecha ? hist.fecha.toISOString().split('T')[0] : '',
+            tipoSeguimiento: hist.tipoSeguimiento,
+            medioComunicacion: hist.medioComunicacion,
+            observacion: hist.observacion || hist.detalles,
+            estadoNuevo: hist.estadoNuevo,
+            creadoPorNombre: hist.creadoPorNombre,
+            creadoPorRol: hist.creadoPorRol,
+            origenRegistro: hist.origenRegistro
+          }));
+          const ultimaIntervencion = historialCompartido.find((hist: any) =>
+            hist.tipoSeguimiento === 'Intervención de Bienestar' ||
+            hist.medioComunicacion === 'Gestión interna de Bienestar' ||
+            hist.origenRegistro === 'Bienestar'
+          );
+
+          return {
+            id: String(log.id),
+            aprendizFichaId: log.aprendizFichaId,
+            aprendizNombre: student?.nombre || 'Aprendiz',
+            aprendizDocumento: student?.documento || '',
+            aprendizCorreo: student?.correo || '',
+            aprendizTelefono: student?.telefono || '',
+            fichaCodigo: ficha?.codigoFicha || log.codigoFicha || '',
+            programaNombre: programa?.nombre || '',
+            instructorNombre: log.creadoPorNombre || inst?.nombre || 'Instructor',
+            instructorCorreo: inst?.correo || '',
+            instructorRol: log.creadoPorRol || inst?.rol || '',
+            fechaRemision: log.fechaEnvioMensaje || (log.fecha ? log.fecha.toISOString().split('T')[0] : ''),
+            nivelRiesgo: student?.nivelRiesgo || '',
+            evidenciasPendientes: student?.evidenciasPendientes || log.evidenciasPendientes || 0,
+            diasSinAcceso: student?.diasSinAcceso || log.diasSinAcceso || 0,
+            estadoRemision: ultimaIntervencion?.estadoNuevo || student?.estadoIntervencion || log.estadoNuevo || 'Pendiente de atención por Bienestar',
+            observacion: log.observacion || log.detalles || '',
+            asunto: log.asunto || 'Remisión a Bienestar',
+            ultimaActuacion: ultimaIntervencion?.observacion || log.proximaAccion || 'Pendiente de atención por Bienestar',
+            historialCompartido
+          };
+        });
+
+        return res.json({ success: true, remisiones });
+      }
+    } catch (err: any) {
+      console.error('Error fetching remisiones bienestar:', err);
+      return res.status(500).json({ error: 'Error al recuperar remisiones a Bienestar' });
+    }
+  });
+
+  // 12. Fetch critical alerts escalated to administrative area
   app.get('/api/administrativo/alertas-criticas', requireAuth, async (req: AuthRequest, res) => {
     try {
       const alertsList = [];

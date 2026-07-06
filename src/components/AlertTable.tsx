@@ -191,6 +191,8 @@ export default function AlertTable({
   const [causeBienestar, setCauseBienestar] = useState('Inasistencia reiterada superior a 30 días sin justificar');
   const [descriptionBienestar, setDescriptionBienestar] = useState('');
   const [isReferralSent, setIsReferralSent] = useState(false);
+  const [isSavingReferral, setIsSavingReferral] = useState(false);
+  const [referralError, setReferralError] = useState<string | null>(null);
 
   const selectedEvidenceNames = useMemo(() => getEvidenciasSeleccionadas(fases || []), [fases]);
   const selectedEvidenceSet = useMemo(() => new Set(selectedEvidenceNames), [selectedEvidenceNames]);
@@ -199,6 +201,57 @@ export default function AlertTable({
     return entries.filter(([name]) => selectedEvidenceSet.has(name));
   };
   const [trackingIdBienestar, setTrackingIdBienestar] = useState('');
+
+  const buildBienestarReferralText = (learner: Aprendiz, causa: string) => {
+    const total = getScopedEvidenceEntries(learner).length;
+    const aprobadas = getScopedEvidenceEntries(learner).filter(([, value]) => {
+      const estado = value && typeof value === 'object' ? (value as any).estado : String(value);
+      return estado === 'A';
+    }).length;
+    const desaprobadas = getScopedEvidenceEntries(learner).filter(([, value]) => {
+      const estado = value && typeof value === 'object' ? (value as any).estado : String(value);
+      return estado === 'D';
+    }).length;
+    const noEntregadas = getScopedEvidenceEntries(learner).filter(([, value]) => {
+      const estado = value && typeof value === 'object' ? (value as any).estado : String(value);
+      return estado === '-';
+    }).length;
+    const pendientes = desaprobadas + noEntregadas;
+
+    return `Cordial saludo,
+
+Desde el seguimiento académico realizado a la ficha ${fichaInfo.numeroFicha}, se remite a Bienestar el caso del aprendiz ${learner.nombre}, identificado/a con documento ${learner.documento}, correo ${learner.correo || 'sin correo registrado'}, debido a que presenta novedades relacionadas con su acceso a la plataforma y/o el estado de sus evidencias.
+
+De acuerdo con la información registrada en el sistema, el último ingreso reportado fue el ${learner.ultimoAcceso || 'sin registro'}, con ${learner.diasSinAcceso || 0} días sin acceso. Actualmente presenta ${pendientes} evidencias pendientes y un nivel de riesgo ${learner.estadoSeguimiento || learner.nivelRiesgo || 'sin dato suficiente'}.
+
+Resumen académico:
+* Total de evidencias seleccionadas: ${total}
+* Evidencias aprobadas: ${aprobadas}
+* Evidencias desaprobadas: ${desaprobadas}
+* Evidencias no entregadas: ${noEntregadas}
+* Causa principal: ${causa}
+
+Se solicita, de manera respetuosa, el acompañamiento correspondiente desde Bienestar, con el fin de establecer contacto con el aprendiz, identificar posibles situaciones que estén afectando su continuidad formativa y orientar las acciones de apoyo pertinentes.
+
+Observación del instructor:
+${descriptionBienestar || 'Registrar observación específica del caso.'}
+
+Cordialmente,
+${fichaInfo.instructor || 'Tutora AVA'}`;
+  };
+
+  const openBienestarReferral = (learner: Aprendiz) => {
+    const causa = learner.diasSinAcceso && learner.diasSinAcceso > 30
+      ? 'Inasistencia reiterada superior a 30 días sin justificar'
+      : 'Desmotivación académica / Cambio de programa de formación';
+
+    setBienestarReferralLearner(learner);
+    setIsReferralSent(false);
+    setIsSavingReferral(false);
+    setReferralError(null);
+    setCauseBienestar(causa);
+    setDescriptionBienestar(buildBienestarReferralText(learner, causa));
+  };
 
   // Form states for Plan de Mejoramiento Modal
   const [strategiesPlan, setStrategiesPlan] = useState('Sustentar de forma presencial u online las evidencias desaprobadas y pendientes mediante la entrega de talleres prácticos complementarios.');
@@ -224,31 +277,68 @@ export default function AlertTable({
   };
 
   // Handler for Bienestar formal submission
-  const handleSendBienestarReferral = (e: React.FormEvent) => {
+  const handleSendBienestarReferral = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!bienestarReferralLearner) return;
-    
-    const randomNum = Math.floor(1000 + Math.random() * 9000);
-    const trackingCode = `SENA-BIE-2026-${randomNum}`;
-    setTrackingIdBienestar(trackingCode);
-    setIsReferralSent(true);
 
-    // Also inject into learner's temporary history so it shows up live in the table
-    const newLog = {
-      id: `bie-${Date.now()}`,
-      fecha: new Date().toLocaleDateString(),
-      instructor: fichaInfo.instructor,
-      tipoSeguimiento: 'Remisión a Bienestar',
-      estadoIntervencion: 'En seguimiento',
-      detalle: `Remisión oficial enviada a Bienestar. Radicado: ${trackingCode}. Causa: ${causeBienestar}. Observaciones: ${descriptionBienestar || 'Ninguna'}`,
-      estrategias: ['Orientación social', 'Seguimiento por Psicología'],
-      causas: [causeBienestar]
-    };
-    if (!bienestarReferralLearner.historialIntervenciones) {
-      bienestarReferralLearner.historialIntervenciones = [];
+    if (isSavingReferral || isReferralSent) return;
+
+    if (!onSaveBitacoraSeguimiento || !bienestarReferralLearner.dbId) {
+      setReferralError('No fue posible registrar la remisión en PostgreSQL. Verifica que el aprendiz exista en la base de datos.');
+      return;
     }
-    bienestarReferralLearner.historialIntervenciones.unshift(newLog);
-    bienestarReferralLearner.estadoIntervencion = 'En seguimiento';
+
+    setIsSavingReferral(true);
+    setReferralError(null);
+
+    try {
+      const observacionFinal = descriptionBienestar.trim();
+      const cuerpoRemision = buildBienestarReferralText(bienestarReferralLearner, causeBienestar);
+      const total = getScopedEvidenceEntries(bienestarReferralLearner).length;
+      const aprobadas = getScopedEvidenceEntries(bienestarReferralLearner).filter(([, value]) => {
+        const estado = value && typeof value === 'object' ? (value as any).estado : String(value);
+        return estado === 'A';
+      }).length;
+      const desaprobadas = getScopedEvidenceEntries(bienestarReferralLearner).filter(([, value]) => {
+        const estado = value && typeof value === 'object' ? (value as any).estado : String(value);
+        return estado === 'D';
+      }).length;
+      const noEntregadas = getScopedEvidenceEntries(bienestarReferralLearner).filter(([, value]) => {
+        const estado = value && typeof value === 'object' ? (value as any).estado : String(value);
+        return estado === '-';
+      }).length;
+      const pendientes = desaprobadas + noEntregadas;
+
+      const result = await onSaveBitacoraSeguimiento(bienestarReferralLearner.dbId, {
+        tipoSeguimiento: 'Remisión a Bienestar',
+        medioComunicacion: 'Remisión interna a Bienestar',
+        fechaEnvioMensaje: new Date().toISOString().split('T')[0],
+        asunto: `Remisión a Bienestar - Seguimiento aprendiz ${bienestarReferralLearner.nombre} - Ficha ${fichaInfo.numeroFicha}`,
+        cuerpoMensaje: cuerpoRemision,
+        observacion: observacionFinal || cuerpoRemision,
+        acuerdosEstablecidos: 'Caso pendiente de atención por Bienestar',
+        compromisos: `Causa principal: ${causeBienestar}`,
+        proximaAccion: 'Bienestar debe revisar y registrar intervención',
+        totalEvidencias: total,
+        evidenciasEnviadas: aprobadas + desaprobadas,
+        evidenciasAprobadas: aprobadas,
+        evidenciasDesaprobadas: desaprobadas,
+        evidenciasPendientes: pendientes,
+        diasSinAcceso: bienestarReferralLearner.diasSinAcceso || 0,
+        fechaUltimoIngreso: bienestarReferralLearner.ultimoAcceso || null,
+        origenRegistro: 'Instructor',
+        estadoIntervencion: 'Remitido a Bienestar'
+      });
+
+      const seguimientoId = result?.seguimiento?.id || Date.now();
+      const trackingCode = `SENA-BIE-${new Date().getFullYear()}-${seguimientoId}`;
+      setTrackingIdBienestar(trackingCode);
+      setIsReferralSent(true);
+    } catch (err: any) {
+      setReferralError(err.message || 'No fue posible registrar la remisión en la bitácora.');
+    } finally {
+      setIsSavingReferral(false);
+    }
   };
 
   // Handler for Plan de Mejoramiento PDF generation
@@ -1499,9 +1589,7 @@ export default function AlertTable({
 
                                                   {/* Child Responses nested list */}
                                                   {(() => {
-                                                    const childResponses = (ap.historialIntervenciones || []).filter(
-                                                      child => child.parentSeguimientoId && String(child.parentSeguimientoId) === String(ll.id)
-                                                    );
+                                                    const childResponses: any[] = [];
                                                     
                                                     return (
                                                       <div className="space-y-2 mt-3 pt-2.5 border-t border-slate-200/50">
@@ -1588,7 +1676,7 @@ export default function AlertTable({
                                   <span className="font-bold text-[9.5px] text-slate-500 uppercase block">E. Intervenciones:</span>
                                   {(() => {
                                     const intervenciones = (ap.historialIntervenciones || [])
-                                      .filter(hist => !isAcademicCall(hist) && !hist.parentSeguimientoId);
+                                      .filter(hist => !isAcademicCall(hist));
                                     
                                     if (intervenciones.length === 0) {
                                       return <span className="text-slate-400 italic text-[11px] block pl-1">Sin intervenciones académicas registradas</span>;
@@ -1617,9 +1705,7 @@ export default function AlertTable({
 
                                             {/* Nested child responses for this intervention */}
                                             {(() => {
-                                              const childResponses = (ap.historialIntervenciones || []).filter(
-                                                child => child.parentSeguimientoId && String(child.parentSeguimientoId) === String(int.id)
-                                              );
+                                              const childResponses: any[] = [];
                                               
                                               return (
                                                 <div className="space-y-1.5 mt-2 pt-2 border-t border-slate-200/50">
@@ -1683,12 +1769,7 @@ export default function AlertTable({
                               pendingEv={getPendingCount(ap)}
                               onEnviarLlamado={onEnviarLlamado}
                               onTriggerRemitirBienestar={(ap) => {
-                                setBienestarReferralLearner(ap);
-                                setIsReferralSent(false);
-                                setCauseBienestar(ap.diasSinAcceso && ap.diasSinAcceso > 30 
-                                  ? 'Inasistencia reiterada superior a 30 días sin justificar'
-                                  : 'Desmotivación académica / Cambio de programa de formación');
-                                setDescriptionBienestar('');
+                                openBienestarReferral(ap);
                               }}
                               onTriggerPlanMejora={(ap) => {
                                 setImprovementPlanLearner(ap);
@@ -1713,17 +1794,17 @@ export default function AlertTable({
                               <button
                                 type="button"
                                 onClick={() => {
-                                  setBienestarReferralLearner(ap);
-                                  setIsReferralSent(false);
-                                  setCauseBienestar(ap.diasSinAcceso && ap.diasSinAcceso > 30 
-                                    ? 'Inasistencia reiterada superior a 30 días sin justificar'
-                                    : 'Desmotivación académica / Cambio de programa de formación');
-                                  setDescriptionBienestar('');
+                                  openBienestarReferral(ap);
                                 }}
-                                className="bg-rose-50 hover:bg-rose-100 text-rose-700 hover:text-rose-800 text-xs py-1.5 px-3 rounded-md font-bold transition-all border border-rose-100 flex items-center gap-1 cursor-pointer"
+                                disabled={hasBienestar(ap)}
+                                className={`text-xs py-1.5 px-3 rounded-md font-bold transition-all border flex items-center gap-1 ${
+                                  hasBienestar(ap)
+                                    ? 'bg-slate-100 text-slate-500 border-slate-200 cursor-not-allowed'
+                                    : 'bg-rose-600 hover:bg-rose-700 text-white border-rose-700 shadow-sm cursor-pointer'
+                                }`}
                               >
-                                <Heart className="w-3.5 h-3.5 fill-current text-rose-500" />
-                                Remitir a Bienestar
+                                <Heart className="w-3.5 h-3.5 fill-current" />
+                                {hasBienestar(ap) ? 'Remisión registrada' : 'Remitir a Bienestar'}
                               </button>
 
                               <button
@@ -2059,6 +2140,7 @@ export default function AlertTable({
                   setBienestarReferralLearner(null);
                   setIsReferralSent(false);
                   setDescriptionBienestar('');
+                  setReferralError(null);
                 }}
                 className="text-rose-400 hover:text-rose-600 p-1 rounded-lg transition-colors font-bold text-sm cursor-pointer"
               >
@@ -2094,6 +2176,7 @@ export default function AlertTable({
                       setBienestarReferralLearner(null);
                       setIsReferralSent(false);
                       setDescriptionBienestar('');
+                      setReferralError(null);
                     }}
                     className="bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold text-xs py-2 px-4 rounded-lg transition-colors border border-slate-200 cursor-pointer"
                   >
@@ -2113,10 +2196,22 @@ export default function AlertTable({
                     <span className="font-bold text-rose-700">Documento:</span> CC {bienestarReferralLearner.documento}
                   </div>
                   <div>
+                    <span className="font-bold text-rose-700">Correo:</span> {bienestarReferralLearner.correo || 'Sin registro'}
+                  </div>
+                  <div>
                     <span className="font-bold text-rose-700">Ficha:</span> {fichaInfo.numeroFicha}
                   </div>
                   <div>
+                    <span className="font-bold text-rose-700">Programa:</span> {fichaInfo.programaFormacion || 'No especificado'}
+                  </div>
+                  <div>
+                    <span className="font-bold text-rose-700">Riesgo:</span> {bienestarReferralLearner.estadoSeguimiento || bienestarReferralLearner.nivelRiesgo || 'Sin dato'}
+                  </div>
+                  <div>
                     <span className="font-bold text-rose-700">Inasistencia:</span> {bienestarReferralLearner.diasSinAcceso || 0} días sin ingreso
+                  </div>
+                  <div>
+                    <span className="font-bold text-rose-700">Instructor:</span> {fichaInfo.instructor || 'Instructor responsable'}
                   </div>
                 </div>
 
@@ -2138,18 +2233,24 @@ export default function AlertTable({
 
                 <div className="space-y-1 text-xs">
                   <label className="block font-black text-slate-700 uppercase tracking-wide">
-                    Detalles, Evidencias Recabadas y Gestiones Previas
+                    Texto base editable de remisión
                   </label>
                   <textarea
-                    rows={4}
+                    rows={10}
                     value={descriptionBienestar}
                     onChange={(e) => setDescriptionBienestar(e.target.value)}
-                    placeholder="Escriba los detalles del caso. Ejem: Se realizaron 3 llamadas telefónicas y se enviaron 2 correos sin recibir respuesta del aprendiz. Sus compañeros indican que tiene problemas laborales..."
+                    placeholder="Edite aquí el texto de remisión que quedará guardado en la bitácora y disponible para Bienestar."
                     className="w-full rounded-lg border-slate-300 text-xs focus:ring-rose-500 focus:border-rose-500"
                     required
                   />
-                  <span className="text-[10px] text-slate-400 font-medium">Requerido para generar el formato oficial de remisión.</span>
+                  <span className="text-[10px] text-slate-400 font-medium">Este texto se guardará en PostgreSQL como remisión formal y será visible para Bienestar/Admin.</span>
                 </div>
+
+                {referralError && (
+                  <div className="bg-red-50 border border-red-200 text-red-700 rounded-lg p-3 text-xs font-bold">
+                    {referralError}
+                  </div>
+                )}
 
                 <div className="bg-amber-50 p-3 rounded-lg border border-amber-200 text-[10px] text-amber-850 leading-relaxed font-semibold">
                   ⚠️ Esta remisión actualizará el estado del aprendiz a <strong>"En seguimiento"</strong> de forma automática para reflejar la intervención en curso ante el equipo interdisciplinario.
@@ -2162,6 +2263,7 @@ export default function AlertTable({
                       setBienestarReferralLearner(null);
                       setIsReferralSent(false);
                       setDescriptionBienestar('');
+                      setReferralError(null);
                     }}
                     className="bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 text-xs font-bold py-2 px-4 rounded-lg transition-colors cursor-pointer"
                   >
@@ -2169,10 +2271,20 @@ export default function AlertTable({
                   </button>
                   <button
                     type="submit"
+                    disabled={isSavingReferral || isReferralSent}
                     className="bg-rose-600 hover:bg-rose-700 text-white text-xs font-black py-2 px-4 rounded-lg shadow-sm flex items-center gap-1.5 cursor-pointer"
                   >
-                    <Heart className="w-3.5 h-3.5 fill-current" />
-                    Enviar y Radicar Remisión
+                    {isSavingReferral ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        Guardando...
+                      </>
+                    ) : (
+                      <>
+                        <Heart className="w-3.5 h-3.5 fill-current" />
+                        Enviar y Radicar Remisión
+                      </>
+                    )}
                   </button>
                 </div>
               </form>
@@ -2650,7 +2762,6 @@ Acuerdos y compromisos: ${compromisos.trim() || 'Sin acuerdos particulares'}`,
           diasSinAcceso: aprendiz.diasSinAcceso || 0,
           fechaUltimoIngreso: aprendiz.ultimoAcceso || null,
           origenRegistro: 'Instructor',
-          parentSeguimientoId: Number(respondingToSeguimiento.parentId),
           estadoIntervencion: estadoFinal
         };
       } else {
@@ -2682,7 +2793,6 @@ Acuerdos y compromisos: ${compromisos.trim() || 'Sin acuerdos particulares'}`,
           diasSinAcceso: aprendiz.diasSinAcceso || 0,
           fechaUltimoIngreso: aprendiz.ultimoAcceso || null,
           origenRegistro: 'Instructor',
-          parentSeguimientoId: null,
           estadoIntervencion: 'Pendiente de respuesta'
         };
 
