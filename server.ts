@@ -4115,18 +4115,27 @@ ${mensaje}`;
     };
 
     const deriveReferralStatus = (intervention: any): string => {
-      if (!intervention) return 'Pendiente de atención por Bienestar';
+      if (!intervention) return 'Pendiente por atender';
       const text = [
         intervention?.estadoNuevo,
         intervention?.tipoSeguimiento,
         intervention?.medioComunicacion,
         intervention?.observacion
       ].join(' ').toLowerCase();
-      if (text.includes('fallido')) return 'Contacto fallido';
       if (text.includes('atendido') || text.includes('cerrado') || text.includes('finalizado') || text.includes('cierre')) {
+        if (text.includes('cerrado') || text.includes('finalizado') || text.includes('cierre')) {
+          return 'Cerrado o finalizado';
+        }
         return 'Atendido por Bienestar';
       }
-      return 'En seguimiento por Bienestar';
+      if (
+        (text.includes('respuesta del aprendiz') && !text.includes('no registrada')) ||
+        text.includes('respuesta / actualización') ||
+        text.includes('respuesta / actualizacion')
+      ) {
+        return 'Con respuesta del aprendiz';
+      }
+      return 'Atendido por Bienestar';
     };
 
     const getReferralPriority = (status: string): number => {

@@ -1801,6 +1801,8 @@ export default function AdminSection({
         </div>
       )}
 
+      {activeTab === 'programacion' && (
+      <>
       {/* SECCIÓN COMPLEMENTARIA: Directorio de Instructores y Credenciales de Acceso */}
       <div className="border-t border-slate-100 pt-6 mt-6 space-y-4">
         {/* Toggleable Header Container */}
@@ -2318,6 +2320,8 @@ export default function AdminSection({
           </div>
         </div>
       )}
+      </>
+      )}
 
       {activeTab === 'alertas_criticas' && (
         <AlertasCriticasSection authToken={authToken} />
@@ -2348,27 +2352,33 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
   const [bienestarRespuesta, setBienestarRespuesta] = useState('');
   const [bienestarAcuerdos, setBienestarAcuerdos] = useState('');
   const [bienestarNota, setBienestarNota] = useState('');
+  const [bienestarMode, setBienestarMode] = useState<'intervencion' | 'respuesta'>('intervencion');
+  const [bienestarSuccessMsg, setBienestarSuccessMsg] = useState<string | null>(null);
   const [savingBienestar, setSavingBienestar] = useState(false);
 
   const getRemisionStatus = (remision: any): string => {
     const raw = String(remision?.estadoRemision || '').trim();
     const lower = raw.toLowerCase();
     if (!raw || lower.includes('pendiente') || lower.includes('sin intervención') || lower.includes('sin intervencion') || lower.includes('no atend')) {
-      return 'Pendiente de atención por Bienestar';
+      return 'Pendiente por atender';
     }
-    if (lower.includes('atendido') || lower.includes('cerrado') || lower.includes('finalizado')) {
+    if (lower.includes('cerrado') || lower.includes('finalizado') || lower.includes('cierre')) {
+      return 'Cerrado o finalizado';
+    }
+    if (lower.includes('respuesta')) {
+      return 'Con respuesta del aprendiz';
+    }
+    if (lower.includes('atendido') || lower.includes('seguimiento') || lower.includes('intervención') || lower.includes('intervencion')) {
       return 'Atendido por Bienestar';
     }
-    if (lower.includes('fallido')) {
-      return 'Contacto fallido';
-    }
-    return 'En seguimiento por Bienestar';
+    return 'Atendido por Bienestar';
   };
 
   const getRemisionPriority = (status: string): number => {
     const lower = status.toLowerCase();
     if (lower.includes('pendiente') || lower.includes('sin intervención') || lower.includes('sin intervencion') || lower.includes('no atend')) return 0;
-    if (lower.includes('seguimiento') || lower.includes('proceso') || lower.includes('intervención') || lower.includes('intervencion')) return 1;
+    if (lower.includes('cerrado') || lower.includes('finalizado')) return 2;
+    if (lower.includes('atendido') || lower.includes('respuesta') || lower.includes('seguimiento') || lower.includes('proceso') || lower.includes('intervención') || lower.includes('intervencion')) return 1;
     return 2;
   };
 
@@ -2398,7 +2408,10 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
     if (lower.includes('pendiente') || lower.includes('sin intervención') || lower.includes('sin intervencion')) {
       return 'bg-rose-50 text-rose-800 border-rose-200';
     }
-    if (lower.includes('atendido') || lower.includes('cerrado') || lower.includes('finalizado')) {
+    if (lower.includes('cerrado') || lower.includes('finalizado')) {
+      return 'bg-slate-100 text-slate-700 border-slate-300';
+    }
+    if (lower.includes('atendido') || lower.includes('respuesta')) {
       return 'bg-emerald-50 text-emerald-800 border-emerald-200';
     }
     if (lower.includes('fallido')) {
@@ -2497,44 +2510,60 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
 
   const handleOpenRemision = (remision: any) => {
     setSelectedRemision(remision);
-    setBienestarEstado(remision.estadoRemision === 'Atendido por Bienestar' ? 'Atendido' : 'En seguimiento');
+    setBienestarEstado(getRemisionStatus(remision) === 'Cerrado o finalizado' ? 'Cerrado' : 'Atendido');
     setBienestarMedio('Llamada al aprendiz');
     setBienestarFecha(new Date().toISOString().split('T')[0]);
     setBienestarIntervencion('');
     setBienestarRespuesta('');
     setBienestarAcuerdos('');
     setBienestarNota('');
+    setBienestarMode('intervencion');
+    setBienestarSuccessMsg(null);
   };
 
   const handleGuardarIntervencionBienestar = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedRemision) return;
     if (savingBienestar) return;
-    if (!bienestarIntervencion.trim()) {
+    if (bienestarMode === 'intervencion' && !bienestarIntervencion.trim()) {
       alert('La intervención realizada es obligatoria.');
+      return;
+    }
+    if (bienestarMode === 'respuesta' && !bienestarRespuesta.trim()) {
+      alert('La respuesta del aprendiz es obligatoria para registrar esta actualización.');
       return;
     }
     setSavingBienestar(true);
 
     try {
       const activeToken = await getFreshToken();
-      const observacionEstructurada = [
-        `Tipo de intervención: ${bienestarMedio}`,
-        `Fecha de intervención: ${bienestarFecha}`,
-        `Intervención realizada: ${bienestarIntervencion.trim()}`,
-        `Respuesta del aprendiz: ${bienestarRespuesta.trim() || 'No registrada'}`,
-        `Acuerdos o compromisos: ${bienestarAcuerdos.trim() || 'No registrados'}`,
-        `Estado del caso: ${bienestarEstado}`,
-        `Observación adicional: ${bienestarNota.trim() || 'Sin observación adicional'}`
-      ].join('\n');
+      const isRespuestaMode = bienestarMode === 'respuesta';
+      const observacionEstructurada = isRespuestaMode
+        ? [
+            'Respuesta / actualización de Bienestar',
+            `Fecha de registro: ${bienestarFecha}`,
+            `Respuesta del aprendiz: ${bienestarRespuesta.trim()}`,
+            `Acuerdos o compromisos: ${bienestarAcuerdos.trim() || 'No registrados'}`,
+            `Estado del caso: ${bienestarEstado}`,
+            `Observación adicional: ${bienestarNota.trim() || 'Sin observación adicional'}`
+          ].join('\n')
+        : [
+            `Tipo de intervención: ${bienestarMedio}`,
+            `Fecha de intervención: ${bienestarFecha}`,
+            `Intervención realizada: ${bienestarIntervencion.trim()}`,
+            `Estado del caso: ${bienestarEstado}`,
+            `Observación adicional: ${bienestarNota.trim() || 'Sin observación adicional'}`
+          ].join('\n');
 
       await saveBienestarIntervencion(
         activeToken,
         Number(selectedRemision.aprendizFichaId),
         {
-          tipoSeguimiento: 'Intervención de Bienestar',
-          medioComunicacion: bienestarMedio,
-          asunto: `Intervención Bienestar - ${selectedRemision.aprendizNombre}`,
+          tipoSeguimiento: isRespuestaMode ? 'Respuesta aprendiz - Bienestar' : 'Intervención de Bienestar',
+          medioComunicacion: isRespuestaMode ? 'Respuesta / Actualización' : bienestarMedio,
+          asunto: isRespuestaMode
+            ? `Respuesta aprendiz - Bienestar - ${selectedRemision.aprendizNombre}`
+            : `Intervención Bienestar - ${selectedRemision.aprendizNombre}`,
           observacion: observacionEstructurada,
           respuestaAprendiz: bienestarRespuesta.trim() || null,
           acuerdosEstablecidos: bienestarAcuerdos.trim() || bienestarEstado,
@@ -2552,13 +2581,22 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
         }
       );
 
-      setSelectedRemision(null);
+      setBienestarSuccessMsg(isRespuestaMode
+        ? 'Respuesta del aprendiz registrada correctamente en la bitácora.'
+        : 'Intervención registrada correctamente. Ahora puedes agregar la respuesta del aprendiz si aplica.'
+      );
       setBienestarIntervencion('');
       setBienestarRespuesta('');
       setBienestarAcuerdos('');
       setBienestarNota('');
-      await fetchAlertas();
-      alert('Intervención de Bienestar registrada correctamente.');
+      const remisionesData = await fetchRemisionesBienestar(activeToken);
+      const nextRemisiones = remisionesData.remisiones || [];
+      setRemisiones(nextRemisiones);
+      const updatedRemision = nextRemisiones.find((item: any) => String(item.id) === String(selectedRemision.id));
+      if (updatedRemision) {
+        setSelectedRemision(updatedRemision);
+      }
+      setBienestarMode('respuesta');
     } catch (err: any) {
       alert(err.message || 'No fue posible registrar la intervención de Bienestar.');
     } finally {
@@ -2657,16 +2695,16 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
       badgeClass: 'bg-rose-50 text-rose-800 border-rose-200'
     },
     {
-      title: 'En seguimiento por Bienestar',
-      description: 'Casos con al menos una intervención registrada.',
-      emptyText: 'No hay remisiones en seguimiento con los filtros actuales.',
+      title: 'Atendidas por Bienestar',
+      description: 'Casos con primera intervención o respuesta registrada por Bienestar.',
+      emptyText: 'No hay remisiones atendidas con los filtros actuales.',
       items: filteredRemisiones.filter(item => getRemisionPriority(getRemisionStatus(item)) === 1),
       badgeClass: 'bg-purple-50 text-purple-800 border-purple-200'
     },
     {
-      title: 'Atendidas o cerradas',
-      description: 'Casos atendidos, cerrados, finalizados o con contacto fallido.',
-      emptyText: 'No hay remisiones atendidas o cerradas con los filtros actuales.',
+      title: 'Cerradas o finalizadas',
+      description: 'Casos cerrados o finalizados explícitamente desde Bienestar.',
+      emptyText: 'No hay remisiones cerradas o finalizadas con los filtros actuales.',
       items: filteredRemisiones.filter(item => getRemisionPriority(getRemisionStatus(item)) === 2),
       badgeClass: 'bg-emerald-50 text-emerald-800 border-emerald-200'
     }
@@ -2774,11 +2812,11 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
           <strong className="block text-2xl text-rose-950 mt-1">{remisionSummary.pendientes}</strong>
         </div>
         <div className="bg-white border border-purple-200 rounded-xl p-4 shadow-3xs">
-          <span className="text-[10px] font-black text-purple-700 uppercase">En seguimiento</span>
+          <span className="text-[10px] font-black text-purple-700 uppercase">Atendidas</span>
           <strong className="block text-2xl text-purple-950 mt-1">{remisionSummary.enSeguimiento}</strong>
         </div>
         <div className="bg-white border border-emerald-200 rounded-xl p-4 shadow-3xs">
-          <span className="text-[10px] font-black text-emerald-700 uppercase">Atendidas / cerradas</span>
+          <span className="text-[10px] font-black text-emerald-700 uppercase">Cerradas / finalizadas</span>
           <strong className="block text-2xl text-emerald-950 mt-1">{remisionSummary.atendidas}</strong>
         </div>
         <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-3xs">
@@ -2808,10 +2846,10 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
             className="border border-slate-250 bg-white rounded-lg px-3 py-1.5 text-xs font-bold text-slate-700 outline-none focus:ring-1 focus:ring-red-500"
           >
             <option value="todos">Todos los Estados</option>
-            <option value="Pendiente de atención por Bienestar">Pendiente de atención por Bienestar</option>
-            <option value="En seguimiento por Bienestar">En seguimiento por Bienestar</option>
+            <option value="Pendiente por atender">Pendiente por atender</option>
             <option value="Atendido por Bienestar">Atendido por Bienestar</option>
-            <option value="Contacto fallido">Contacto fallido</option>
+            <option value="Con respuesta del aprendiz">Con respuesta del aprendiz</option>
+            <option value="Cerrado o finalizado">Cerrado o finalizado</option>
             <option value="Requiere intervención administrativa">Requiere intervención administrativa</option>
             <option value="En trámite">En trámite</option>
             <option value="Cerrado">Cerrado</option>
@@ -3091,26 +3129,75 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
                 </div>
 
                 <form onSubmit={handleGuardarIntervencionBienestar} className="border border-purple-200 rounded-xl overflow-hidden">
-                  <div className="bg-purple-50 px-4 py-2 border-b border-purple-100">
-                    <h4 className="text-[11px] font-black text-purple-900 uppercase">Registrar actuación de Bienestar</h4>
+                  <div className="bg-purple-50 px-4 py-2 border-b border-purple-100 space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <h4 className="text-[11px] font-black text-purple-900 uppercase">
+                        {bienestarMode === 'respuesta' ? 'Agregar respuesta del aprendiz' : 'Registrar actuación de Bienestar'}
+                      </h4>
+                      <span className="text-[9px] font-bold text-purple-700 bg-white border border-purple-200 px-2 py-0.5 rounded-full">
+                        Bitácora compartida
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setBienestarMode('intervencion')}
+                        className={`px-2.5 py-1 rounded-lg text-[10px] font-black border transition-colors ${
+                          bienestarMode === 'intervencion'
+                            ? 'bg-purple-700 text-white border-purple-700'
+                            : 'bg-white text-purple-700 border-purple-200 hover:bg-purple-50'
+                        }`}
+                      >
+                        Registrar intervención
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setBienestarMode('respuesta')}
+                        disabled={!getLatestBienestarLog(selectedRemision) && !bienestarSuccessMsg}
+                        className={`px-2.5 py-1 rounded-lg text-[10px] font-black border transition-colors disabled:opacity-45 disabled:cursor-not-allowed ${
+                          bienestarMode === 'respuesta'
+                            ? 'bg-purple-700 text-white border-purple-700'
+                            : 'bg-white text-purple-700 border-purple-200 hover:bg-purple-50'
+                        }`}
+                      >
+                        Agregar respuesta del aprendiz
+                      </button>
+                    </div>
                   </div>
                   <div className="p-4 space-y-3">
+                    {bienestarSuccessMsg && (
+                      <div className="bg-emerald-50 border border-emerald-200 text-emerald-900 rounded-lg px-3 py-2 text-xs font-semibold">
+                        {bienestarSuccessMsg}
+                      </div>
+                    )}
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       <div>
-                        <label className="block text-[10px] font-black text-slate-600 uppercase mb-1">Tipo de intervención</label>
-                        <select
-                          value={bienestarMedio}
-                          onChange={e => setBienestarMedio(e.target.value)}
-                          className="w-full px-3 py-2 border border-slate-200 bg-white rounded-lg text-xs font-bold text-slate-800 outline-none focus:ring-1 focus:ring-purple-600"
-                        >
-                          <option value="Llamada al aprendiz">Llamada al aprendiz</option>
-                          <option value="Correo al aprendiz">Correo al aprendiz</option>
-                          <option value="Mensaje por WhatsApp">Mensaje por WhatsApp</option>
-                          <option value="Orientación o acompañamiento">Orientación o acompañamiento</option>
-                          <option value="Contacto fallido">Contacto fallido</option>
-                          <option value="Seguimiento del caso">Seguimiento del caso</option>
-                          <option value="Cierre o atención del caso">Cierre o atención del caso</option>
-                        </select>
+                        <label className="block text-[10px] font-black text-slate-600 uppercase mb-1">
+                          {bienestarMode === 'respuesta' ? 'Tipo de actualización' : 'Tipo de comunicación o intervención'}
+                        </label>
+                        {bienestarMode === 'respuesta' ? (
+                          <input
+                            value="Respuesta / Actualización"
+                            readOnly
+                            className="w-full px-3 py-2 border border-slate-200 bg-slate-50 rounded-lg text-xs font-bold text-slate-700 outline-none"
+                          />
+                        ) : (
+                          <select
+                            value={bienestarMedio}
+                            onChange={e => setBienestarMedio(e.target.value)}
+                            className="w-full px-3 py-2 border border-slate-200 bg-white rounded-lg text-xs font-bold text-slate-800 outline-none focus:ring-1 focus:ring-purple-600"
+                          >
+                            <option value="Llamada al aprendiz">Llamada al aprendiz</option>
+                            <option value="Correo al aprendiz">Correo al aprendiz</option>
+                            <option value="Mensaje por WhatsApp">Mensaje por WhatsApp</option>
+                            <option value="Reunión virtual">Reunión virtual</option>
+                            <option value="Orientación o acompañamiento">Orientación o acompañamiento</option>
+                            <option value="Contacto fallido">Contacto fallido</option>
+                            <option value="Seguimiento del caso">Seguimiento del caso</option>
+                            <option value="Otro seguimiento">Otro seguimiento</option>
+                            <option value="Cierre del caso">Cierre del caso</option>
+                          </select>
+                        )}
                       </div>
                       <div>
                         <label className="block text-[10px] font-black text-slate-600 uppercase mb-1">Fecha de intervención</label>
@@ -3136,37 +3223,43 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
                         </select>
                       </div>
                     </div>
-                    <div>
-                      <label className="block text-[10px] font-black text-slate-600 uppercase mb-1">Intervención realizada</label>
-                      <textarea
-                        required
-                        rows={5}
-                        value={bienestarIntervencion}
-                        onChange={e => setBienestarIntervencion(e.target.value)}
-                        placeholder="Describa qué hizo Bienestar: llamada, orientación, contacto, revisión del caso o cierre."
-                        className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs font-medium focus:border-purple-600 focus:ring-1 focus:ring-purple-600 outline-none leading-relaxed"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-[10px] font-black text-slate-600 uppercase mb-1">Respuesta del aprendiz</label>
-                      <textarea
-                        rows={3}
-                        value={bienestarRespuesta}
-                        onChange={e => setBienestarRespuesta(e.target.value)}
-                        placeholder="Registre la respuesta, justificación o información entregada por el aprendiz."
-                        className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs font-medium focus:border-purple-600 focus:ring-1 focus:ring-purple-600 outline-none leading-relaxed"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-[10px] font-black text-slate-600 uppercase mb-1">Acuerdos o compromisos</label>
-                      <textarea
-                        rows={3}
-                        value={bienestarAcuerdos}
-                        onChange={e => setBienestarAcuerdos(e.target.value)}
-                        placeholder="Registre compromisos, acuerdos, fechas o acciones pactadas."
-                        className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs font-medium focus:border-purple-600 focus:ring-1 focus:ring-purple-600 outline-none leading-relaxed"
-                      />
-                    </div>
+                    {bienestarMode === 'intervencion' ? (
+                      <div>
+                        <label className="block text-[10px] font-black text-slate-600 uppercase mb-1">Observación o detalle de la intervención</label>
+                        <textarea
+                          required
+                          rows={5}
+                          value={bienestarIntervencion}
+                          onChange={e => setBienestarIntervencion(e.target.value)}
+                          placeholder="Registre la llamada, correo, WhatsApp, reunión, orientación, contacto fallido u otro seguimiento realizado."
+                          className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs font-medium focus:border-purple-600 focus:ring-1 focus:ring-purple-600 outline-none leading-relaxed"
+                        />
+                      </div>
+                    ) : (
+                      <>
+                        <div>
+                          <label className="block text-[10px] font-black text-slate-600 uppercase mb-1">Respuesta del aprendiz</label>
+                          <textarea
+                            required
+                            rows={4}
+                            value={bienestarRespuesta}
+                            onChange={e => setBienestarRespuesta(e.target.value)}
+                            placeholder="Registre la respuesta, justificación o información entregada por el aprendiz."
+                            className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs font-medium focus:border-purple-600 focus:ring-1 focus:ring-purple-600 outline-none leading-relaxed"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] font-black text-slate-600 uppercase mb-1">Acuerdos o compromisos</label>
+                          <textarea
+                            rows={3}
+                            value={bienestarAcuerdos}
+                            onChange={e => setBienestarAcuerdos(e.target.value)}
+                            placeholder="Registre compromisos, acuerdos, fechas o acciones pactadas."
+                            className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs font-medium focus:border-purple-600 focus:ring-1 focus:ring-purple-600 outline-none leading-relaxed"
+                          />
+                        </div>
+                      </>
+                    )}
                     <div>
                       <label className="block text-[10px] font-black text-slate-600 uppercase mb-1">Observación final o nota interna</label>
                       <textarea
@@ -3198,7 +3291,7 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
                         ) : (
                           <>
                             <Check className="w-3.5 h-3.5 text-white" />
-                            Registrar intervención
+                            {bienestarMode === 'respuesta' ? 'Registrar respuesta' : 'Registrar intervención'}
                           </>
                         )}
                       </button>
