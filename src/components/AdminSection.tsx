@@ -118,7 +118,7 @@ export default function AdminSection({
     return authToken;
   };
 
-  const [internalActiveTab, setInternalActiveTab] = useState<'programacion' | 'aprendices_masivo' | 'alertas_criticas'>('programacion');
+  const [internalActiveTab, setInternalActiveTab] = useState<'programacion' | 'aprendices_masivo' | 'alertas_criticas'>('alertas_criticas');
 
   const activeTab = externalActiveTab !== undefined ? externalActiveTab : internalActiveTab;
   const setActiveTab = externalOnChangeTab !== undefined ? externalOnChangeTab : setInternalActiveTab;
@@ -2341,9 +2341,13 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
   const [observacion, setObservacion] = useState<string>('');
   const [saving, setSaving] = useState(false);
   const [selectedRemision, setSelectedRemision] = useState<any | null>(null);
-  const [bienestarEstado, setBienestarEstado] = useState('En seguimiento por Bienestar');
+  const [bienestarEstado, setBienestarEstado] = useState('En seguimiento');
   const [bienestarMedio, setBienestarMedio] = useState('Llamada al aprendiz');
-  const [bienestarObservacion, setBienestarObservacion] = useState('');
+  const [bienestarFecha, setBienestarFecha] = useState(() => new Date().toISOString().split('T')[0]);
+  const [bienestarIntervencion, setBienestarIntervencion] = useState('');
+  const [bienestarRespuesta, setBienestarRespuesta] = useState('');
+  const [bienestarAcuerdos, setBienestarAcuerdos] = useState('');
+  const [bienestarNota, setBienestarNota] = useState('');
   const [savingBienestar, setSavingBienestar] = useState(false);
 
   const getRemisionStatus = (remision: any): string => {
@@ -2383,8 +2387,8 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
       item?.tipoSeguimiento,
       item?.medioComunicacion
     ].join(' ').toLowerCase();
-    if (text.includes('bienestar') || text.includes('administrativo') || text.includes('admin')) return 'Bienestar/Admin';
     if (text.includes('remisión a bienestar') || text.includes('remision a bienestar')) return 'Instructor que remite';
+    if (text.includes('bienestar') || text.includes('administrativo') || text.includes('admin')) return 'Bienestar/Admin';
     if (text.includes('instructor') || text.includes('llamado') || text.includes('correo de llamado')) return 'Instructor';
     return 'Usuario del sistema';
   };
@@ -2401,6 +2405,37 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
       return 'bg-amber-50 text-amber-800 border-amber-200';
     }
     return 'bg-purple-50 text-purple-800 border-purple-200';
+  };
+
+  const truncateText = (value: string, max = 110): string => {
+    const clean = (value || '').replace(/\s+/g, ' ').trim();
+    if (clean.length <= max) return clean;
+    return `${clean.slice(0, max - 3).trim()}...`;
+  };
+
+  const getLatestBienestarLog = (remision: any): any | null => {
+    const history = remision?.historialCompartido || remision?.historial || [];
+    return history.find((item: any) => getAreaResponsable(item) === 'Bienestar/Admin') || null;
+  };
+
+  const getUltimaIntervencionResumen = (remision: any): { meta: string; resumen: string } => {
+    const latest = getLatestBienestarLog(remision);
+    if (!latest) {
+      return {
+        meta: `${remision?.fechaRemision || 'Sin fecha'} · Instructor · Remisión recibida · Pendiente`,
+        resumen: 'Pendiente de atención por Bienestar'
+      };
+    }
+    const meta = [
+      latest.fecha || latest.fechaRegistro || 'Sin fecha',
+      getAreaResponsable(latest),
+      latest.medioComunicacion || latest.tipoSeguimiento || 'Intervención',
+      getRemisionStatus(remision) || latest.estadoNuevo
+    ].filter(Boolean).join(' · ');
+    return {
+      meta,
+      resumen: truncateText(latest.observacion || latest.detalles || latest.detalle || remision?.ultimaActuacion || '', 115)
+    };
   };
 
   const getFreshToken = async (): Promise<string> => {
@@ -2462,32 +2497,51 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
 
   const handleOpenRemision = (remision: any) => {
     setSelectedRemision(remision);
-    setBienestarEstado(remision.estadoRemision === 'Atendido por Bienestar' ? 'Atendido por Bienestar' : 'En seguimiento por Bienestar');
+    setBienestarEstado(remision.estadoRemision === 'Atendido por Bienestar' ? 'Atendido' : 'En seguimiento');
     setBienestarMedio('Llamada al aprendiz');
-    setBienestarObservacion('');
+    setBienestarFecha(new Date().toISOString().split('T')[0]);
+    setBienestarIntervencion('');
+    setBienestarRespuesta('');
+    setBienestarAcuerdos('');
+    setBienestarNota('');
   };
 
   const handleGuardarIntervencionBienestar = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedRemision) return;
     if (savingBienestar) return;
-    if (!bienestarObservacion.trim()) {
-      alert('La observación de Bienestar es obligatoria.');
+    if (!bienestarIntervencion.trim()) {
+      alert('La intervención realizada es obligatoria.');
       return;
     }
     setSavingBienestar(true);
 
     try {
       const activeToken = await getFreshToken();
+      const observacionEstructurada = [
+        `Tipo de intervención: ${bienestarMedio}`,
+        `Fecha de intervención: ${bienestarFecha}`,
+        `Intervención realizada: ${bienestarIntervencion.trim()}`,
+        `Respuesta del aprendiz: ${bienestarRespuesta.trim() || 'No registrada'}`,
+        `Acuerdos o compromisos: ${bienestarAcuerdos.trim() || 'No registrados'}`,
+        `Estado del caso: ${bienestarEstado}`,
+        `Observación adicional: ${bienestarNota.trim() || 'Sin observación adicional'}`
+      ].join('\n');
+
       await saveBienestarIntervencion(
         activeToken,
         Number(selectedRemision.aprendizFichaId),
         {
+          tipoSeguimiento: 'Intervención de Bienestar',
           medioComunicacion: bienestarMedio,
           asunto: `Intervención Bienestar - ${selectedRemision.aprendizNombre}`,
-          observacion: bienestarObservacion.trim(),
-          respuestaAprendiz: bienestarObservacion.trim(),
-          acuerdosEstablecidos: bienestarEstado,
+          observacion: observacionEstructurada,
+          respuestaAprendiz: bienestarRespuesta.trim() || null,
+          acuerdosEstablecidos: bienestarAcuerdos.trim() || bienestarEstado,
+          compromisos: bienestarAcuerdos.trim() || null,
+          proximaAccion: bienestarNota.trim() || null,
+          fechaEnvioMensaje: bienestarFecha,
+          fechaRespuestaAprendiz: bienestarFecha,
           estadoIntervencion: bienestarEstado,
           diasSinAcceso: selectedRemision.diasSinAcceso || 0,
           evidenciasPendientes: selectedRemision.evidenciasPendientes || 0,
@@ -2499,7 +2553,10 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
       );
 
       setSelectedRemision(null);
-      setBienestarObservacion('');
+      setBienestarIntervencion('');
+      setBienestarRespuesta('');
+      setBienestarAcuerdos('');
+      setBienestarNota('');
       await fetchAlertas();
       alert('Intervención de Bienestar registrada correctamente.');
     } catch (err: any) {
@@ -2587,8 +2644,116 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
     if (getRemisionPriority(status) === 0) acc.pendientes++;
     else if (getRemisionPriority(status) === 1) acc.enSeguimiento++;
     else acc.atendidas++;
+    acc.total++;
     return acc;
-  }, { pendientes: 0, enSeguimiento: 0, atendidas: 0 });
+  }, { pendientes: 0, enSeguimiento: 0, atendidas: 0, total: 0 });
+
+  const remisionGroups = [
+    {
+      title: 'Pendientes por atender',
+      description: 'Remisiones nuevas sin intervención registrada por Bienestar.',
+      emptyText: 'No hay remisiones pendientes por atender.',
+      items: filteredRemisiones.filter(item => getRemisionPriority(getRemisionStatus(item)) === 0),
+      badgeClass: 'bg-rose-50 text-rose-800 border-rose-200'
+    },
+    {
+      title: 'En seguimiento por Bienestar',
+      description: 'Casos con al menos una intervención registrada.',
+      emptyText: 'No hay remisiones en seguimiento con los filtros actuales.',
+      items: filteredRemisiones.filter(item => getRemisionPriority(getRemisionStatus(item)) === 1),
+      badgeClass: 'bg-purple-50 text-purple-800 border-purple-200'
+    },
+    {
+      title: 'Atendidas o cerradas',
+      description: 'Casos atendidos, cerrados, finalizados o con contacto fallido.',
+      emptyText: 'No hay remisiones atendidas o cerradas con los filtros actuales.',
+      items: filteredRemisiones.filter(item => getRemisionPriority(getRemisionStatus(item)) === 2),
+      badgeClass: 'bg-emerald-50 text-emerald-800 border-emerald-200'
+    }
+  ];
+
+  const renderRemisionesTable = (items: any[], emptyText: string) => {
+    if (items.length === 0) {
+      return (
+        <div className="p-6 text-center text-xs text-slate-500 font-semibold border-t border-slate-100">
+          {emptyText}
+        </div>
+      );
+    }
+
+    return (
+      <div className="overflow-x-auto border-t border-slate-100">
+        <table className="w-full text-left border-collapse">
+          <thead>
+            <tr className="bg-slate-50 border-b border-slate-150 text-[10px] font-black uppercase tracking-wider text-slate-500">
+              <th className="py-3 px-4">Aprendiz</th>
+              <th className="py-3 px-4">Ficha / Programa</th>
+              <th className="py-3 px-4">Instructor</th>
+              <th className="py-3 px-4 text-center">Riesgo</th>
+              <th className="py-3 px-4 text-center">Pendientes</th>
+              <th className="py-3 px-4">Estado</th>
+              <th className="py-3 px-4">Última intervención</th>
+              <th className="py-3 px-4 text-center">Acción</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100 text-xs">
+            {items.map((remision) => {
+              const estadoRemision = getRemisionStatus(remision);
+              const resumen = getUltimaIntervencionResumen(remision);
+              return (
+                <tr key={remision.id} className="hover:bg-rose-50/30 transition-colors">
+                  <td className="py-3.5 px-4">
+                    <span className="font-bold text-slate-800">{remision.aprendizNombre}</span>
+                    <span className="block text-[10px] text-slate-500 font-mono">
+                      {remision.aprendizDocumento} · {remision.aprendizCorreo || 'sin correo'}
+                    </span>
+                  </td>
+                  <td className="py-3.5 px-4">
+                    <span className="bg-slate-100 text-slate-700 border border-slate-200 font-mono font-black text-[10px] px-1.5 py-0.5 rounded">
+                      Ficha {remision.fichaCodigo || 'N/D'}
+                    </span>
+                    <span className="block text-[10px] text-slate-500 mt-1 max-w-[220px] truncate" title={remision.programaNombre}>
+                      {remision.programaNombre || 'Programa no registrado'}
+                    </span>
+                  </td>
+                  <td className="py-3.5 px-4">
+                    <span className="font-bold text-slate-700">{remision.instructorNombre || remision.usuarioResponsableNombre || 'Instructor'}</span>
+                    <span className="block text-[10px] text-slate-400">{remision.instructorCorreo || remision.instructorRol || ''}</span>
+                  </td>
+                  <td className="py-3.5 px-4 text-center">
+                    <span className="inline-flex px-2 py-1 rounded-full bg-amber-50 text-amber-800 border border-amber-200 font-black text-[10px]">
+                      {remision.nivelRiesgo || 'Sin dato'}
+                    </span>
+                  </td>
+                  <td className="py-3.5 px-4 text-center font-black text-slate-700">
+                    {remision.evidenciasPendientes ?? 'No disponible'}
+                  </td>
+                  <td className="py-3.5 px-4">
+                    <span className={`inline-flex px-2 py-0.5 rounded-full text-[10px] font-extrabold border ${getStatusBadgeClass(estadoRemision)}`}>
+                      {estadoRemision}
+                    </span>
+                  </td>
+                  <td className="py-3.5 px-4 text-[10px] text-slate-600 max-w-[260px]">
+                    <span className="block font-black text-slate-700 truncate" title={resumen.meta}>{resumen.meta}</span>
+                    <span className="block text-slate-500 mt-0.5 leading-snug" title={resumen.resumen}>{resumen.resumen}</span>
+                  </td>
+                  <td className="py-3.5 px-4 text-center">
+                    <button
+                      type="button"
+                      onClick={() => handleOpenRemision(remision)}
+                      className="bg-purple-700 hover:bg-purple-800 text-white font-extrabold text-[10.5px] px-3 py-1.5 rounded-lg shadow-sm transition-all cursor-pointer"
+                    >
+                      Ver / atender
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    );
+  };
 
   return (
     <div className="space-y-6 animate-fade-in text-left">
@@ -2603,9 +2768,9 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
         <div className="bg-white border border-rose-200 rounded-xl p-4 shadow-3xs">
-          <span className="text-[10px] font-black text-rose-700 uppercase">Pendientes / no atendidas</span>
+          <span className="text-[10px] font-black text-rose-700 uppercase">Pendientes</span>
           <strong className="block text-2xl text-rose-950 mt-1">{remisionSummary.pendientes}</strong>
         </div>
         <div className="bg-white border border-purple-200 rounded-xl p-4 shadow-3xs">
@@ -2615,6 +2780,10 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
         <div className="bg-white border border-emerald-200 rounded-xl p-4 shadow-3xs">
           <span className="text-[10px] font-black text-emerald-700 uppercase">Atendidas / cerradas</span>
           <strong className="block text-2xl text-emerald-950 mt-1">{remisionSummary.atendidas}</strong>
+        </div>
+        <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-3xs">
+          <span className="text-[10px] font-black text-slate-600 uppercase">Total remisiones</span>
+          <strong className="block text-2xl text-slate-900 mt-1">{remisionSummary.total}</strong>
         </div>
       </div>
 
@@ -2661,93 +2830,21 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
       </div>
 
       {!loading && !error && (
-        <div className="bg-white border border-rose-200 rounded-xl shadow-3xs overflow-hidden">
-          <div className="px-4 py-3 bg-rose-50 border-b border-rose-100 flex items-center justify-between">
-            <div>
-              <h4 className="text-xs font-black text-rose-950 uppercase">Remisiones a Bienestar</h4>
-              <p className="text-[10px] text-rose-800 font-semibold">
-                Casos remitidos por instructores y actuaciones registradas por Bienestar.
-              </p>
+        <div className="space-y-4">
+          {remisionGroups.map(group => (
+            <div key={group.title} className="bg-white border border-slate-200 rounded-xl shadow-3xs overflow-hidden">
+              <div className="px-4 py-3 bg-slate-50 border-b border-slate-100 flex items-center justify-between gap-3">
+                <div>
+                  <h4 className="text-xs font-black text-slate-900 uppercase">{group.title}</h4>
+                  <p className="text-[10px] text-slate-500 font-semibold">{group.description}</p>
+                </div>
+                <span className={`border text-[10px] font-black px-2 py-1 rounded ${group.badgeClass}`}>
+                  {group.items.length} casos
+                </span>
+              </div>
+              {renderRemisionesTable(group.items, group.emptyText)}
             </div>
-            <span className="bg-white border border-rose-200 text-rose-700 text-[10px] font-black px-2 py-1 rounded">
-              {filteredRemisiones.length} casos
-            </span>
-          </div>
-
-          {filteredRemisiones.length === 0 ? (
-            <div className="p-8 text-center text-xs text-slate-500 font-semibold">
-              No hay remisiones a Bienestar con los filtros actuales.
-            </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse">
-                <thead>
-                  <tr className="bg-slate-50 border-b border-slate-150 text-[10px] font-black uppercase tracking-wider text-slate-500">
-                    <th className="py-3 px-4">Aprendiz</th>
-                    <th className="py-3 px-4">Ficha / Programa</th>
-                    <th className="py-3 px-4">Instructor</th>
-                    <th className="py-3 px-4 text-center">Riesgo</th>
-                    <th className="py-3 px-4 text-center">Pendientes</th>
-                    <th className="py-3 px-4">Estado</th>
-                    <th className="py-3 px-4">Última actuación</th>
-                    <th className="py-3 px-4 text-center">Acción</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 text-xs">
-                  {filteredRemisiones.map((remision) => {
-                    const estadoRemision = getRemisionStatus(remision);
-                    return (
-                    <tr key={remision.id} className="hover:bg-rose-50/30 transition-colors">
-                      <td className="py-3.5 px-4">
-                        <span className="font-bold text-slate-800">{remision.aprendizNombre}</span>
-                        <span className="block text-[10px] text-slate-500 font-mono">
-                          {remision.aprendizDocumento} · {remision.aprendizCorreo || 'sin correo'}
-                        </span>
-                      </td>
-                      <td className="py-3.5 px-4">
-                        <span className="bg-slate-100 text-slate-700 border border-slate-200 font-mono font-black text-[10px] px-1.5 py-0.5 rounded">
-                          Ficha {remision.fichaCodigo || 'N/D'}
-                        </span>
-                        <span className="block text-[10px] text-slate-500 mt-1 max-w-[220px] truncate" title={remision.programaNombre}>
-                          {remision.programaNombre || 'Programa no registrado'}
-                        </span>
-                      </td>
-                      <td className="py-3.5 px-4">
-                        <span className="font-bold text-slate-700">{remision.instructorNombre || remision.usuarioResponsableNombre || 'Instructor'}</span>
-                        <span className="block text-[10px] text-slate-400">{remision.instructorCorreo || remision.instructorRol || ''}</span>
-                      </td>
-                      <td className="py-3.5 px-4 text-center">
-                        <span className="inline-flex px-2 py-1 rounded-full bg-amber-50 text-amber-800 border border-amber-200 font-black text-[10px]">
-                          {remision.nivelRiesgo || 'Sin dato'}
-                        </span>
-                      </td>
-                      <td className="py-3.5 px-4 text-center font-black text-slate-700">
-                        {remision.evidenciasPendientes ?? 0}
-                      </td>
-                      <td className="py-3.5 px-4">
-                        <span className={`inline-flex px-2 py-0.5 rounded-full text-[10px] font-extrabold border ${getStatusBadgeClass(estadoRemision)}`}>
-                          {estadoRemision}
-                        </span>
-                      </td>
-                      <td className="py-3.5 px-4 text-[10px] text-slate-600 max-w-[220px]">
-                        {remision.ultimaActuacion || 'Pendiente de atención por Bienestar'}
-                      </td>
-                      <td className="py-3.5 px-4 text-center">
-                        <button
-                          type="button"
-                          onClick={() => handleOpenRemision(remision)}
-                          className="bg-purple-700 hover:bg-purple-800 text-white font-extrabold text-[10.5px] px-3 py-1.5 rounded-lg shadow-sm transition-all cursor-pointer"
-                        >
-                          Ver / atender
-                        </button>
-                      </td>
-                    </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
+          ))}
         </div>
       )}
 
@@ -2920,7 +3017,7 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
                     </div>
                     <div>
                       <span className="block text-[9px] font-black text-slate-400 uppercase">Pendientes</span>
-                      <span className="font-bold text-slate-700">{selectedRemision.evidenciasPendientes || 0}</span>
+                      <span className="font-bold text-slate-700">{selectedRemision.evidenciasPendientes ?? 'No disponible'}</span>
                     </div>
                   </div>
                   <div className="pt-2 border-t border-slate-200">
@@ -3000,7 +3097,7 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
                   <div className="p-4 space-y-3">
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       <div>
-                        <label className="block text-[10px] font-black text-slate-600 uppercase mb-1">Medio / actuación</label>
+                        <label className="block text-[10px] font-black text-slate-600 uppercase mb-1">Tipo de intervención</label>
                         <select
                           value={bienestarMedio}
                           onChange={e => setBienestarMedio(e.target.value)}
@@ -3016,27 +3113,67 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
                         </select>
                       </div>
                       <div>
-                        <label className="block text-[10px] font-black text-slate-600 uppercase mb-1">Estado</label>
+                        <label className="block text-[10px] font-black text-slate-600 uppercase mb-1">Fecha de intervención</label>
+                        <input
+                          type="date"
+                          value={bienestarFecha}
+                          onChange={e => setBienestarFecha(e.target.value)}
+                          className="w-full px-3 py-2 border border-slate-200 bg-white rounded-lg text-xs font-bold text-slate-800 outline-none focus:ring-1 focus:ring-purple-600"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-black text-slate-600 uppercase mb-1">Estado del caso</label>
                         <select
                           value={bienestarEstado}
                           onChange={e => setBienestarEstado(e.target.value)}
                           className="w-full px-3 py-2 border border-slate-200 bg-white rounded-lg text-xs font-bold text-slate-800 outline-none focus:ring-1 focus:ring-purple-600"
                         >
-                          <option value="En seguimiento por Bienestar">En seguimiento por Bienestar</option>
-                          <option value="Atendido por Bienestar">Atendido por Bienestar</option>
+                          <option value="Pendiente de contacto">Pendiente de contacto</option>
+                          <option value="En seguimiento">En seguimiento</option>
+                          <option value="Atendido">Atendido</option>
                           <option value="Contacto fallido">Contacto fallido</option>
                           <option value="Cerrado">Cerrado</option>
                         </select>
                       </div>
                     </div>
                     <div>
-                      <label className="block text-[10px] font-black text-slate-600 uppercase mb-1">Observación de Bienestar</label>
+                      <label className="block text-[10px] font-black text-slate-600 uppercase mb-1">Intervención realizada</label>
                       <textarea
                         required
                         rows={5}
-                        value={bienestarObservacion}
-                        onChange={e => setBienestarObservacion(e.target.value)}
-                        placeholder="Registre la actuación realizada, resultado del contacto, acuerdos o motivo de contacto fallido."
+                        value={bienestarIntervencion}
+                        onChange={e => setBienestarIntervencion(e.target.value)}
+                        placeholder="Describa qué hizo Bienestar: llamada, orientación, contacto, revisión del caso o cierre."
+                        className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs font-medium focus:border-purple-600 focus:ring-1 focus:ring-purple-600 outline-none leading-relaxed"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-black text-slate-600 uppercase mb-1">Respuesta del aprendiz</label>
+                      <textarea
+                        rows={3}
+                        value={bienestarRespuesta}
+                        onChange={e => setBienestarRespuesta(e.target.value)}
+                        placeholder="Registre la respuesta, justificación o información entregada por el aprendiz."
+                        className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs font-medium focus:border-purple-600 focus:ring-1 focus:ring-purple-600 outline-none leading-relaxed"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-black text-slate-600 uppercase mb-1">Acuerdos o compromisos</label>
+                      <textarea
+                        rows={3}
+                        value={bienestarAcuerdos}
+                        onChange={e => setBienestarAcuerdos(e.target.value)}
+                        placeholder="Registre compromisos, acuerdos, fechas o acciones pactadas."
+                        className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs font-medium focus:border-purple-600 focus:ring-1 focus:ring-purple-600 outline-none leading-relaxed"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-black text-slate-600 uppercase mb-1">Observación final o nota interna</label>
+                      <textarea
+                        rows={3}
+                        value={bienestarNota}
+                        onChange={e => setBienestarNota(e.target.value)}
+                        placeholder="Nota adicional para continuidad del caso."
                         className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs font-medium focus:border-purple-600 focus:ring-1 focus:ring-purple-600 outline-none leading-relaxed"
                       />
                     </div>

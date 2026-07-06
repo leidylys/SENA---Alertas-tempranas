@@ -53,8 +53,8 @@ function getSeguimientoArea(hist: any): string {
     hist?.medioComunicacion,
     hist?.instructor
   ].join(' ').toLowerCase();
-  if (text.includes('bienestar') || text.includes('administrativo') || text.includes('admin')) return 'Bienestar/Admin';
   if (text.includes('remisión a bienestar') || text.includes('remision a bienestar')) return 'Instructor que remite';
+  if (text.includes('bienestar') || text.includes('administrativo') || text.includes('admin')) return 'Bienestar/Admin';
   if (text.includes('instructor') || text.includes('llamado') || text.includes('correo de llamado')) return 'Instructor';
   return 'Usuario del sistema';
 }

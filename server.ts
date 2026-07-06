@@ -4090,24 +4090,28 @@ ${mensaje}`;
         log?.tipoSeguimiento,
         log?.medioComunicacion
       ].join(' ').toLowerCase();
-      if (text.includes('bienestar') || text.includes('administrativo') || text.includes('admin')) return 'Bienestar/Admin';
       if (text.includes('remisión a bienestar') || text.includes('remision a bienestar')) return 'Instructor que remite';
+      if (text.includes('bienestar') || text.includes('administrativo') || text.includes('admin')) return 'Bienestar/Admin';
       if (text.includes('instructor') || text.includes('llamado') || text.includes('correo de llamado')) return 'Instructor';
       return 'Usuario del sistema';
     };
 
     const isBienestarIntervention = (log: any): boolean => {
-      const text = [
-        log?.tipoSeguimiento,
-        log?.medioComunicacion,
-        log?.origenRegistro,
-        log?.creadoPorRol
-      ].join(' ').toLowerCase();
-      return text.includes('intervención de bienestar') ||
-        text.includes('intervencion de bienestar') ||
-        text.includes('gestión interna de bienestar') ||
-        text.includes('gestion interna de bienestar') ||
-        text.includes('bienestar');
+      const tipo = String(log?.tipoSeguimiento || '').toLowerCase();
+      const medio = String(log?.medioComunicacion || '').toLowerCase();
+      const origen = String(log?.origenRegistro || '').toLowerCase();
+      const rol = String(log?.creadoPorRol || '').toLowerCase();
+      if (tipo.includes('remisión a bienestar') || tipo.includes('remision a bienestar') || medio.includes('remisión interna a bienestar') || medio.includes('remision interna a bienestar')) {
+        return false;
+      }
+      return tipo.includes('intervención de bienestar') ||
+        tipo.includes('intervencion de bienestar') ||
+        medio.includes('gestión interna de bienestar') ||
+        medio.includes('gestion interna de bienestar') ||
+        origen.includes('bienestar') ||
+        rol.includes('bienestar') ||
+        rol.includes('administrativo') ||
+        rol.includes('admin');
     };
 
     const deriveReferralStatus = (intervention: any): string => {
@@ -4168,7 +4172,7 @@ ${mensaje}`;
           nivelRiesgo: aprendicesFichas.nivelRiesgo,
           estadoIntervencion: aprendicesFichas.estadoIntervencion,
           diasSinAcceso: aprendicesFichas.diasSinAcceso,
-          evidenciasPendientes: sql<number>`0`,
+          evidenciasPendientes: seguimientosHistorico.evidenciasPendientes,
           fichaCodigo: fichas.codigoFicha,
           programaNombre: programasFormacion.nombre,
           instructorNombre: instructores.nombre,
