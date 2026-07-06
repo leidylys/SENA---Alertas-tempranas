@@ -44,6 +44,21 @@ function isAcademicCall(hist: { tipoSeguimiento?: string | null; numeroLlamado?:
   return isTypeMail || hasLlamadoInType || hasValidNum;
 }
 
+function getSeguimientoArea(hist: any): string {
+  const text = [
+    hist?.origenRegistro,
+    hist?.creadoPorRol,
+    hist?.usuarioResponsableRol,
+    hist?.tipoSeguimiento,
+    hist?.medioComunicacion,
+    hist?.instructor
+  ].join(' ').toLowerCase();
+  if (text.includes('bienestar') || text.includes('administrativo') || text.includes('admin')) return 'Bienestar/Admin';
+  if (text.includes('remisión a bienestar') || text.includes('remision a bienestar')) return 'Instructor que remite';
+  if (text.includes('instructor') || text.includes('llamado') || text.includes('correo de llamado')) return 'Instructor';
+  return 'Usuario del sistema';
+}
+
 function getOrdinalLlamadoText(num: number): string {
   const ordinals = [
     'Primer llamado',
@@ -1684,14 +1699,30 @@ ${fichaInfo.instructor || 'Tutora AVA'}`;
                                     
                                     return (
                                       <div className="space-y-2.5">
-                                        {intervenciones.map((int, idx) => (
-                                          <div key={int.id || idx} className="p-2.5 bg-slate-50 border border-slate-150 rounded-lg text-[10.5px] text-slate-700 shadow-5xs text-left">
+                                        {intervenciones.map((int, idx) => {
+                                          const areaResponsable = getSeguimientoArea(int);
+                                          const isBienestarRecord = areaResponsable === 'Bienestar/Admin';
+                                          return (
+                                          <div key={int.id || idx} className={`p-2.5 rounded-lg text-[10.5px] text-slate-700 shadow-5xs text-left ${
+                                            isBienestarRecord ? 'bg-purple-50 border border-purple-150' : 'bg-slate-50 border border-slate-150'
+                                          }`}>
                                             <div className="flex items-center justify-between font-bold text-slate-800 mb-1">
                                               <span>{int.tipoSeguimiento || 'Intervención de Apoyo'}</span>
-                                              <span className="text-slate-400 font-medium text-[9px]">{int.fecha}</span>
+                                              <div className="flex items-center gap-1.5">
+                                                <span className={`border rounded-full px-1.5 py-0.5 text-[8.5px] font-black ${
+                                                  isBienestarRecord
+                                                    ? 'bg-white text-purple-800 border-purple-200'
+                                                    : 'bg-white text-slate-600 border-slate-200'
+                                                }`}>
+                                                  {areaResponsable}
+                                                </span>
+                                                <span className="text-slate-400 font-medium text-[9px]">{int.fecha}</span>
+                                              </div>
                                             </div>
                                             <div className="space-y-0.5 text-slate-600">
                                               <div><strong>Obs:</strong> {int.observaciones || int.detalle}</div>
+                                              <div><strong>Medio:</strong> {int.medioComunicacion || 'No disponible'}</div>
+                                              <div><strong>Registrado por:</strong> {int.creadoPorNombre || int.usuarioResponsableNombre || areaResponsable}</div>
                                               <div><strong>Compromiso:</strong> {int.estrategias?.join(', ') || int.estrategiaPersonalizada || 'Ninguno'}</div>
                                               {int.fechaLimite && <div><strong>Límite:</strong> {int.fechaLimite}</div>}
                                               {int.estadoCompromiso && <div><strong>Estado del compromiso:</strong> {int.estadoCompromiso}</div>}
@@ -1721,6 +1752,13 @@ ${fichaInfo.instructor || 'Tutora AVA'}`;
                                                     </div>
                                                   ))}
                                                   
+                                                  {isBienestarRecord ? (
+                                                    <div className="pt-1">
+                                                      <span className="inline-flex text-[9px] font-bold bg-white text-purple-700 border border-purple-200 rounded px-1.5 py-0.5">
+                                                        Solo lectura: registro realizado por Bienestar
+                                                      </span>
+                                                    </div>
+                                                  ) : (
                                                   <div className="flex justify-end pt-1">
                                                     <button
                                                       type="button"
@@ -1744,11 +1782,13 @@ ${fichaInfo.instructor || 'Tutora AVA'}`;
                                                       <span>Agregar respuesta o actualización</span>
                                                     </button>
                                                   </div>
+                                                  )}
                                                 </div>
                                               );
                                             })()}
                                           </div>
-                                        ))}
+                                          );
+                                        })}
                                       </div>
                                     );
                                   })()}

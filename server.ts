@@ -4082,6 +4082,64 @@ ${mensaje}`;
 
   // 11. Fetch Bienestar referrals registered as regular bitacora entries
   app.get('/api/administrativo/remisiones-bienestar', requireAuth, async (req: AuthRequest, res) => {
+    const getLogArea = (log: any): string => {
+      const text = [
+        log?.origenRegistro,
+        log?.creadoPorRol,
+        log?.usuarioResponsableRol,
+        log?.tipoSeguimiento,
+        log?.medioComunicacion
+      ].join(' ').toLowerCase();
+      if (text.includes('bienestar') || text.includes('administrativo') || text.includes('admin')) return 'Bienestar/Admin';
+      if (text.includes('remisión a bienestar') || text.includes('remision a bienestar')) return 'Instructor que remite';
+      if (text.includes('instructor') || text.includes('llamado') || text.includes('correo de llamado')) return 'Instructor';
+      return 'Usuario del sistema';
+    };
+
+    const isBienestarIntervention = (log: any): boolean => {
+      const text = [
+        log?.tipoSeguimiento,
+        log?.medioComunicacion,
+        log?.origenRegistro,
+        log?.creadoPorRol
+      ].join(' ').toLowerCase();
+      return text.includes('intervención de bienestar') ||
+        text.includes('intervencion de bienestar') ||
+        text.includes('gestión interna de bienestar') ||
+        text.includes('gestion interna de bienestar') ||
+        text.includes('bienestar');
+    };
+
+    const deriveReferralStatus = (intervention: any): string => {
+      if (!intervention) return 'Pendiente de atención por Bienestar';
+      const text = [
+        intervention?.estadoNuevo,
+        intervention?.tipoSeguimiento,
+        intervention?.medioComunicacion,
+        intervention?.observacion
+      ].join(' ').toLowerCase();
+      if (text.includes('fallido')) return 'Contacto fallido';
+      if (text.includes('atendido') || text.includes('cerrado') || text.includes('finalizado') || text.includes('cierre')) {
+        return 'Atendido por Bienestar';
+      }
+      return 'En seguimiento por Bienestar';
+    };
+
+    const getReferralPriority = (status: string): number => {
+      const lower = status.toLowerCase();
+      if (lower.includes('pendiente') || lower.includes('sin intervención') || lower.includes('sin intervencion') || lower.includes('no atend')) return 0;
+      if (lower.includes('seguimiento') || lower.includes('proceso') || lower.includes('intervención') || lower.includes('intervencion')) return 1;
+      return 2;
+    };
+
+    const sortRemisiones = (items: any[]) => items.sort((a: any, b: any) => {
+      const priorityDiff = getReferralPriority(a.estadoRemision) - getReferralPriority(b.estadoRemision);
+      if (priorityDiff !== 0) return priorityDiff;
+      const timeA = a.fechaRemision ? new Date(a.fechaRemision).getTime() : 0;
+      const timeB = b.fechaRemision ? new Date(b.fechaRemision).getTime() : 0;
+      return (Number.isFinite(timeB) ? timeB : 0) - (Number.isFinite(timeA) ? timeA : 0);
+    });
+
     try {
       try {
         const referralRows = await db.select({
@@ -4151,14 +4209,12 @@ ${mensaje}`;
             estadoNuevo: log.estadoNuevo,
             creadoPorNombre: log.creadoPorNombre,
             creadoPorRol: log.creadoPorRol,
-            origenRegistro: log.origenRegistro
+            origenRegistro: log.origenRegistro,
+            areaResponsable: getLogArea(log)
           }));
 
-          const ultimaIntervencion = historialCompartido.find((log: any) =>
-            log.tipoSeguimiento === 'Intervención de Bienestar' ||
-            log.medioComunicacion === 'Gestión interna de Bienestar' ||
-            log.origenRegistro === 'Bienestar'
-          );
+          const ultimaIntervencion = historialCompartido.find((log: any) => isBienestarIntervention(log));
+          const estadoRemision = deriveReferralStatus(ultimaIntervencion);
 
           return {
             id: String(row.id),
@@ -4176,15 +4232,16 @@ ${mensaje}`;
             nivelRiesgo: row.nivelRiesgo || '',
             evidenciasPendientes: row.evidenciasPendientes || 0,
             diasSinAcceso: row.diasSinAcceso || 0,
-            estadoRemision: ultimaIntervencion?.estadoNuevo || row.estadoIntervencion || row.estadoNuevo || 'Pendiente de atención por Bienestar',
+            estadoRemision,
             observacion: row.observacion || row.detalles || '',
             asunto: row.asunto || 'Remisión a Bienestar',
             ultimaActuacion: ultimaIntervencion?.observacion || row.proximaAccion || 'Pendiente de atención por Bienestar',
-            historialCompartido
+            historialCompartido,
+            historial: historialCompartido
           };
         }));
 
-        return res.json({ success: true, remisiones });
+        return res.json({ success: true, remisiones: sortRemisiones(remisiones) });
       } catch (dbErr: any) {
         console.warn('Postgres fetch remisiones-bienestar fallback (memoryDb used):', dbErr.message);
 
@@ -4209,13 +4266,11 @@ ${mensaje}`;
             estadoNuevo: hist.estadoNuevo,
             creadoPorNombre: hist.creadoPorNombre,
             creadoPorRol: hist.creadoPorRol,
-            origenRegistro: hist.origenRegistro
+            origenRegistro: hist.origenRegistro,
+            areaResponsable: getLogArea(hist)
           }));
-          const ultimaIntervencion = historialCompartido.find((hist: any) =>
-            hist.tipoSeguimiento === 'Intervención de Bienestar' ||
-            hist.medioComunicacion === 'Gestión interna de Bienestar' ||
-            hist.origenRegistro === 'Bienestar'
-          );
+          const ultimaIntervencion = historialCompartido.find((hist: any) => isBienestarIntervention(hist));
+          const estadoRemision = deriveReferralStatus(ultimaIntervencion);
 
           return {
             id: String(log.id),
@@ -4233,15 +4288,16 @@ ${mensaje}`;
             nivelRiesgo: student?.nivelRiesgo || '',
             evidenciasPendientes: student?.evidenciasPendientes || log.evidenciasPendientes || 0,
             diasSinAcceso: student?.diasSinAcceso || log.diasSinAcceso || 0,
-            estadoRemision: ultimaIntervencion?.estadoNuevo || student?.estadoIntervencion || log.estadoNuevo || 'Pendiente de atención por Bienestar',
+            estadoRemision,
             observacion: log.observacion || log.detalles || '',
             asunto: log.asunto || 'Remisión a Bienestar',
             ultimaActuacion: ultimaIntervencion?.observacion || log.proximaAccion || 'Pendiente de atención por Bienestar',
-            historialCompartido
+            historialCompartido,
+            historial: historialCompartido
           };
         });
 
-        return res.json({ success: true, remisiones });
+        return res.json({ success: true, remisiones: sortRemisiones(remisiones) });
       }
     } catch (err: any) {
       console.error('Error fetching remisiones bienestar:', err);
