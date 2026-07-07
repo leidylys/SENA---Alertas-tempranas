@@ -1,4 +1,5 @@
 import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
 import 'jspdf-autotable';
 import { Aprendiz, Fase, FichaInfo } from '../types';
 
@@ -119,7 +120,7 @@ export function generarPdfSeguimiento(
     ];
   });
 
-  (doc as any).autoTable({
+  autoTable(doc, {
     startY: 77,
     head: [['Nombre Aprendiz', 'Documento', 'Nivel Riesgo', 'Puntaje', 'Evid. D', 'No Entregó', 'Sin Acceso', 'Estado']],
     body: tableRows,
@@ -365,7 +366,7 @@ export function generarPdfConsolidadoFicha(
   doc.text(`Fecha de generacion: ${generatedAt.toLocaleDateString()} ${generatedAt.toLocaleTimeString()}`, 174, 48);
   doc.text(`Alcance: ${getAlcanceAnalisis(options.fases)}`, 174, 54, { maxWidth: 105 });
 
-  (doc as any).autoTable({
+  autoTable(doc, {
     startY: 69,
     head: [['Indicador', 'Valor', 'Indicador', 'Valor', 'Indicador', 'Valor']],
     body: [
@@ -409,7 +410,7 @@ export function generarPdfConsolidadoFicha(
     hasRemisionBienestar(ap) ? 'Si' : 'No'
   ]);
 
-  (doc as any).autoTable({
+  autoTable(doc, {
     startY: y + 4,
     head: [['Nombre', 'Documento', 'Correo', 'Ultimo ingreso', 'Dias', 'Env.', 'Aprob.', 'Desap.', 'No ent.', 'Pend.', 'Total', 'Clasificacion', 'Accion recomendada', 'Llam.', 'Bienestar']],
     body: tableRows,
@@ -461,7 +462,7 @@ export function generarPdfConsolidadoFicha(
   doc.setFontSize(10);
   doc.setTextColor(190, 18, 60);
   doc.text('APRENDICES CRITICOS PRIORIZADOS', 12, y);
-  (doc as any).autoTable({
+  autoTable(doc, {
     startY: y + 4,
     head: [['Aprendiz', 'Documento', 'Correo', 'Dias sin acceso', 'Pendientes', 'Accion recomendada']],
     body: criticos.length > 0
@@ -485,7 +486,7 @@ export function generarPdfConsolidadoFicha(
   doc.setFontSize(10);
   doc.setTextColor(88, 28, 135);
   doc.text('REMISIONES A BIENESTAR', 12, y);
-  (doc as any).autoTable({
+  autoTable(doc, {
     startY: y + 4,
     head: [['Aprendiz', 'Documento', 'Fecha remision', 'Estado', 'Ultima intervencion', 'Respuesta/actualizacion']],
     body: remisiones.length > 0
@@ -613,7 +614,7 @@ export function generarPdfIndividual(aprendiz: Aprendiz, fichaInfo: FichaInfo): 
     return [evName, readableVal];
   });
 
-  (doc as any).autoTable({
+  autoTable(doc, {
     startY: 92,
     head: [['Nombre de la Evidencia Analizada', 'Calificación Actual']],
     body: gradesRows,
