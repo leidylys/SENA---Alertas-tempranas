@@ -36,6 +36,36 @@ function esNoAprobada(stateStr: string): boolean {
   return norm === 'd' || norm === 'desaprobado' || norm === 'desaprobada' || norm === 'reprobado' || norm === 'reprobada';
 }
 
+function esNoEntregada(stateStr: string): boolean {
+  return stateStr.trim() === '-';
+}
+
+function calcularTotalesEvidenciasReales(aprendiz: Aprendiz): {
+  totalReales: number;
+  enviadas: number;
+  aprobadas: number;
+  desaprobadas: number;
+  pendientes: number;
+} {
+  const evidencias = aprendiz?.evidencias || {};
+  return Object.values(evidencias).reduce((acc, rawVal) => {
+    const stateStr = getEstadoString(rawVal);
+    if (!stateStr.trim()) return acc;
+    acc.totalReales++;
+    if (esAprobada(stateStr)) {
+      acc.aprobadas++;
+      acc.enviadas++;
+    } else if (esNoAprobada(stateStr)) {
+      acc.desaprobadas++;
+      acc.enviadas++;
+      acc.pendientes++;
+    } else if (esNoEntregada(stateStr)) {
+      acc.pendientes++;
+    }
+    return acc;
+  }, { totalReales: 0, enviadas: 0, aprobadas: 0, desaprobadas: 0, pendientes: 0 });
+}
+
 /**
  * Calculates risk score and classification for a single learner based on selected evidences.
  * 
@@ -88,7 +118,8 @@ export function calcularRiesgoAprendiz(
       totalAprobadas++;
     } else if (esNoAprobada(stateStr)) {
       totalNoAprobadas++;
-    } else {
+      totalPendientes++;
+    } else if (esNoEntregada(stateStr)) {
       totalPendientes++;
     }
   });
@@ -136,6 +167,16 @@ export function calcularRiesgoAprendiz(
 
   // Evidencias enviadas = Aprobadas + Desaprobadas
   const totalEnviadas = totalAprobadas + totalNoAprobadas;
+  const reales = calcularTotalesEvidenciasReales(aprendiz);
+  const isPosibleDesercionSinEvidenciasReales =
+    reales.totalReales === 0 &&
+    reales.enviadas === 0 &&
+    reales.aprobadas === 0 &&
+    reales.desaprobadas === 0 &&
+    reales.pendientes === 0 &&
+    diasSinAcceso !== null &&
+    diasSinAcceso !== undefined &&
+    diasSinAcceso > 15;
 
   // Check Rule 8.A: Posible deserción
   // Si totalEnviadas = 0, totalPendientes > 0 y hay acceso crítico o nunca ingresó, se refuerza la alerta de posible deserción.
@@ -144,7 +185,11 @@ export function calcularRiesgoAprendiz(
     (estadoAcceso === 'Nunca ingresó' || (diasSinAcceso !== null && diasSinAcceso > 15)) &&
     (totalEnviadas === 0 && totalPendientes > 0 && (totalPendientes === totalEvidencias || totalPendientes / totalEvidencias >= 0.9));
 
-  if (isPosibleDesercionCondition || isRule10Desercion) {
+  if (isPosibleDesercionSinEvidenciasReales) {
+    estadoSeguimiento = 'Posible deserción';
+    alertaPermanencia = 'Posible deserción';
+    accionRecomendada = 'Intervenir y validar posible deserción';
+  } else if (isPosibleDesercionCondition || isRule10Desercion) {
     estadoSeguimiento = 'Posible deserción';
     alertaPermanencia = 'Posible deserción';
     accionRecomendada = 'Remitir a Bienestar';

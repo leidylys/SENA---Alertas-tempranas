@@ -10,12 +10,12 @@ import DashboardCards from '../components/DashboardCards';
 import PhaseSelector from '../components/PhaseSelector';
 import AlertTable from '../components/AlertTable';
 import StrategyModal from '../components/StrategyModal';
-import ReportModal from '../components/ReportModal';
 import { useAlertasStore } from '../hooks/useAlertasStore';
 import { auth } from '../lib/firebase.ts';
-import { saveIndividualIntervention, saveBulkIntervention, syncLearnersToDb, saveBitacoraSeguimiento } from '../lib/api.ts';
+import { saveIndividualIntervention, saveBulkIntervention, syncLearnersToDb, saveBitacoraSeguimiento, fetchFichaDetails } from '../lib/api.ts';
 import { leerArchivoExcel, leerArchivoExcel2D, detectarFases, normalizarAprendices, combinarDatos, detectExcelReportType, parseReporteAprendicesExcel } from '../utils/excelParser';
 import { procesarTodosLosAprendices } from '../utils/riskCalculator';
+import { generarPdfConsolidadoFicha } from '../services/pdfGenerator';
 
 interface DashboardPageProps {
   aprendices: Aprendiz[];
@@ -77,7 +77,7 @@ export default function DashboardPage({
   };
 
   // Modals state
-  const [isReportOpen, setIsReportOpen] = useState(false);
+  const [isGeneratingFichaPdf, setIsGeneratingFichaPdf] = useState(false);
   const [isStrategyOpen, setIsStrategyOpen] = useState(false);
   const [isSavingIntervention, setIsSavingIntervention] = useState(false);
 
@@ -90,6 +90,7 @@ export default function DashboardPage({
   const [isSendingLlamado, setIsSendingLlamado] = useState(false);
   const [llamadoSuccessMessage, setLlamadoSuccessMessage] = useState('');
   const [llamadoError, setLlamadoError] = useState<string | null>(null);
+  const [onLlamadoRegistered, setOnLlamadoRegistered] = useState<(() => void) | null>(null);
   const [copied, setCopied] = useState(false);
   
   // Strategy targets (either singular learner or mass block)
@@ -129,8 +130,19 @@ export default function DashboardPage({
   }, [isAdmin]);
 
   // Trigger email called alert modal
-  const triggerEnviarLlamadoModal = (ap: Aprendiz) => {
+  const closeLlamadoModal = () => {
+    setIsLlamadoOpen(false);
+    setSelectedAprendizLlamado(null);
+    setOnLlamadoRegistered(null);
+  };
+
+  const triggerEnviarLlamadoModal = (ap: Aprendiz, onRegistered?: () => void) => {
     setSelectedAprendizLlamado(ap);
+    if (onRegistered) {
+      setOnLlamadoRegistered(() => onRegistered);
+    } else {
+      setOnLlamadoRegistered(null);
+    }
     setEmailDestinatario(ap.correo || '');
 
     const getACountLocal = (learner: Aprendiz) => {
@@ -436,10 +448,11 @@ ${emailCuerpo}`;
           returnedLlamado
         );
 
+        onLlamadoRegistered?.();
+        setOnLlamadoRegistered(null);
         setLlamadoSuccessMessage(`¡${ordinalLabel} registrado con éxito! El estado del aprendiz se actualizó a "En seguimiento".`);
         setTimeout(() => {
-          setIsLlamadoOpen(false);
-          setSelectedAprendizLlamado(null);
+          closeLlamadoModal();
         }, 2000);
       } else {
         setLlamadoError(result.error || 'Error al registrar el llamado de atención');
@@ -487,7 +500,13 @@ ${emailCuerpo}`;
       const todayISO = new Date().toISOString().split('T')[0];
       const activeToken = await getFreshToken();
 
-      // Update DB and Memory fallback
+      console.log('[PERSISTENCE_DEBUG] Dashboard.handleAprendicesUploadAndSync.datos_formulario', {
+        ficha: fichaInfo.numeroFicha,
+        totalAprendices: list.length,
+        aprendices: list
+      });
+
+      // Update PostgreSQL/Neon through the backend
       const response = await syncLearnersToDb(
         activeToken,
         fichaInfo.numeroFicha,
@@ -498,10 +517,16 @@ ${emailCuerpo}`;
         list,
         todayISO
       );
+      console.log('[PERSISTENCE_DEBUG] Dashboard.handleAprendicesUploadAndSync.respuesta_backend', response);
 
-      const finalLearners = response?.aprendices || list;
+      const reloaded = await fetchFichaDetails(activeToken, fichaInfo.numeroFicha);
+      const finalLearners = reloaded?.aprendices || [];
+      console.log('[PERSISTENCE_DEBUG] Dashboard.handleAprendicesUploadAndSync.consulta_post_guardado', {
+        ficha: fichaInfo.numeroFicha,
+        totalAprendices: finalLearners.length
+      });
 
-      // Re-populate our store while preserving existing phases
+      // Re-populate our store only with data returned by the persisted database read
       store.setDatosCargados(finalLearners, store.fases || []);
 
       // Update current props memory directly
@@ -740,6 +765,12 @@ ${emailCuerpo}`;
 
       // Update database and memory
       const activeToken = await getFreshToken();
+      console.log('[PERSISTENCE_DEBUG] Dashboard.handleTrackingUploadAndSync.datos_formulario', {
+        ficha: fichaInfo.numeroFicha,
+        totalAprendices: recalculatedLearners.length,
+        isCalificaciones: true,
+        aprendices: recalculatedLearners
+      });
       const response = await syncLearnersToDb(
         activeToken,
         fichaInfo.numeroFicha,
@@ -751,10 +782,16 @@ ${emailCuerpo}`;
         todayISO,
         true // isCalificaciones mode
       );
+      console.log('[PERSISTENCE_DEBUG] Dashboard.handleTrackingUploadAndSync.respuesta_backend', response);
 
-      const finalLearners = response?.aprendices || recalculatedLearners;
+      const reloaded = await fetchFichaDetails(activeToken, fichaInfo.numeroFicha);
+      const finalLearners = reloaded?.aprendices || [];
+      console.log('[PERSISTENCE_DEBUG] Dashboard.handleTrackingUploadAndSync.consulta_post_guardado', {
+        ficha: fichaInfo.numeroFicha,
+        totalAprendices: finalLearners.length
+      });
 
-      // Update Zustand state store
+      // Update Zustand state store only with data returned by the persisted database read
       store.setDatosCargados(finalLearners, phasesToUse);
 
       // Update local props memory directly
@@ -796,6 +833,29 @@ ${emailCuerpo}`;
   const countMedio = store.aprendices.filter(a => a.estadoSeguimiento === 'Riesgo medio').length;
   const countBajo = store.aprendices.filter(a => a.estadoSeguimiento === 'Riesgo bajo').length;
   const countSinDato = store.aprendices.filter(a => a.estadoSeguimiento === 'Sin dato suficiente').length;
+
+  const handleGenerarPdfFicha = () => {
+    if (!store.aprendices || store.aprendices.length === 0) {
+      alert('No hay aprendices cargados para generar el reporte de ficha.');
+      return;
+    }
+
+    setIsGeneratingFichaPdf(true);
+    try {
+      const doc = generarPdfConsolidadoFicha(store.aprendices, fichaInfo, {
+        fases,
+        generadoPor: fichaInfo.instructor
+      });
+      const fecha = new Date().toISOString().split('T')[0];
+      const ficha = (fichaInfo.numeroFicha || 'SinFicha').replace(/[^\w-]+/g, '_');
+      doc.save(`Reporte_Ficha_${ficha}_${fecha}.pdf`);
+    } catch (error) {
+      console.error('Error generando PDF consolidado de ficha:', error);
+      alert('No fue posible generar el PDF consolidado de la ficha.');
+    } finally {
+      setIsGeneratingFichaPdf(false);
+    }
+  };
 
   // Modals Triggers
   const triggerIndividualIntervention = (ap: Aprendiz) => {
@@ -954,7 +1014,6 @@ ${emailCuerpo}`;
           creadoPorNombre: seguimiento.creadoPorNombre || seguimiento.instructor,
           usuarioResponsableNombre: seguimiento.usuarioResponsableNombre || seguimiento.instructor,
           numeroLlamado: seguimiento.numeroLlamado,
-          parentSeguimientoId: seguimiento.parentSeguimientoId ?? datosSeguimiento.parentSeguimientoId
         };
 
         store.aplicarIntervencionIndividual(
@@ -1006,12 +1065,13 @@ ${emailCuerpo}`;
           {/* Open Export Modal */}
           <button
             type="button"
-            onClick={() => setIsReportOpen(true)}
-            className="flex-1 sm:flex-initial bg-white/10 hover:bg-white/20 text-white text-xs font-bold py-2.5 px-3 rounded transition-colors flex items-center justify-center gap-1.5 border border-white/20"
+            onClick={handleGenerarPdfFicha}
+            disabled={isGeneratingFichaPdf}
+            className="flex-1 sm:flex-initial bg-white/10 hover:bg-white/20 disabled:bg-white/5 disabled:cursor-not-allowed text-white text-xs font-bold py-2.5 px-3 rounded transition-colors flex items-center justify-center gap-1.5 border border-white/20"
             id="open-report-options-btn"
           >
-            <FileText className="w-4 h-4" />
-            <span>Generar PDF</span>
+            {isGeneratingFichaPdf ? <Loader2 className="w-4 h-4 animate-spin" /> : <FileText className="w-4 h-4" />}
+            <span>{isGeneratingFichaPdf ? 'Generando...' : 'Generar PDF'}</span>
           </button>
 
           {isAdmin ? (
@@ -1553,6 +1613,7 @@ ${emailCuerpo}`;
         <div className="lg:col-span-9 h-full">
           <AlertTable
             aprendices={store.aprendices}
+            fases={store.fases}
             fichaInfo={fichaInfo}
             selectedIds={store.selectedAprendicesIds}
             filterSearch={store.filterSearch}
@@ -1588,14 +1649,6 @@ ${emailCuerpo}`;
         onGuardar={handleGuardarIntervencion}
       />
 
-      {/* 2. Download formal PDF/Excel Options Modal */}
-      <ReportModal
-        isOpen={isReportOpen}
-        onClose={() => setIsReportOpen(false)}
-        aprendices={store.aprendices}
-        fichaInfo={fichaInfo}
-      />
-
       {/* 3. Enviar Llamado de Atención Modal */}
       {isLlamadoOpen && selectedAprendizLlamado && (
         <div className="fixed inset-0 bg-slate-900/65 backdrop-blur-xs flex items-center justify-center p-4 z-50 overflow-y-auto animate-fade-in" id="modal-enviar-llamado-atencion">
@@ -1608,7 +1661,7 @@ ${emailCuerpo}`;
               </div>
               <button 
                 type="button" 
-                onClick={() => setIsLlamadoOpen(false)}
+                onClick={closeLlamadoModal}
                 className="p-1 hover:bg-white/10 rounded-full transition-colors text-white"
               >
                 <X className="w-5 h-5" />
@@ -1830,16 +1883,16 @@ ${emailCuerpo}`;
                         setCopied(true);
                         setTimeout(() => setCopied(false), 2000);
                       }}
-                      className="bg-white hover:bg-slate-50 text-slate-700 text-xs font-bold py-1.5 px-3 rounded-lg border border-slate-200 transition-all flex items-center gap-1 cursor-pointer"
+                      className="bg-slate-700 hover:bg-slate-800 text-white text-xs font-bold py-1.5 px-3 rounded-lg border border-slate-800 shadow-sm transition-all flex items-center gap-1 cursor-pointer"
                     >
                       {copied ? (
                         <>
-                          <Check className="w-3.5 h-3.5 text-emerald-600" />
-                          <span className="text-emerald-700">Copiado</span>
+                          <Check className="w-3.5 h-3.5 text-white" />
+                          <span>Copiado</span>
                         </>
                       ) : (
                         <>
-                          <Copy className="w-3.5 h-3.5 text-slate-500" />
+                          <Copy className="w-3.5 h-3.5 text-white" />
                           <span>Copiar texto</span>
                         </>
                       )}
@@ -1852,10 +1905,10 @@ ${emailCuerpo}`;
                         const mailtoUrl = `mailto:${encodeURIComponent(emailDestinatario)}?subject=${encodeURIComponent(emailAsunto)}&body=${encodeURIComponent(emailCuerpo)}`;
                         window.location.href = mailtoUrl;
                       }}
-                      className="bg-white hover:bg-slate-50 text-slate-700 text-xs font-bold py-1.5 px-3 rounded-lg border border-slate-200 transition-all flex items-center gap-1 cursor-pointer"
+                      className="bg-[#007832] hover:bg-[#005c24] text-white text-xs font-bold py-1.5 px-3 rounded-lg border border-[#005c24] shadow-sm transition-all flex items-center gap-1 cursor-pointer"
                       title="Abrir este correo en Outlook / Gmail"
                     >
-                      <ExternalLink className="w-3.5 h-3.5 text-slate-500" />
+                      <ExternalLink className="w-3.5 h-3.5 text-white" />
                       <span>Abrir correo</span>
                     </button>
                   </div>
@@ -1863,7 +1916,7 @@ ${emailCuerpo}`;
                   <div className="flex gap-2">
                     <button
                       type="button"
-                      onClick={() => setIsLlamadoOpen(false)}
+                      onClick={closeLlamadoModal}
                       className="bg-white hover:bg-slate-50 text-slate-600 text-xs font-bold py-1.5 px-4 rounded-lg border border-slate-200 transition-all cursor-pointer"
                     >
                       Cancelar

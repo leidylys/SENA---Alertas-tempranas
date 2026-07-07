@@ -41,7 +41,7 @@ import {
   parseReporteAprendicesExcel,
   detectExcelReportType
 } from '../utils/excelParser';
-import { uploadProgrammingGrid, syncLearnersToDb, resetSystemDatabase } from '../lib/api';
+import { uploadProgrammingGrid, syncLearnersToDb, resetSystemDatabase, fetchRemisionesBienestar, saveBienestarIntervencion } from '../lib/api';
 import { procesarTodosLosAprendices } from '../utils/riskCalculator';
 
 export function formatInstructorNombre(nombre: string, correo?: string): string {
@@ -118,7 +118,7 @@ export default function AdminSection({
     return authToken;
   };
 
-  const [internalActiveTab, setInternalActiveTab] = useState<'programacion' | 'aprendices_masivo' | 'alertas_criticas'>('programacion');
+  const [internalActiveTab, setInternalActiveTab] = useState<'programacion' | 'aprendices_masivo' | 'alertas_criticas'>('alertas_criticas');
 
   const activeTab = externalActiveTab !== undefined ? externalActiveTab : internalActiveTab;
   const setActiveTab = externalOnChangeTab !== undefined ? externalOnChangeTab : setInternalActiveTab;
@@ -130,17 +130,22 @@ export default function AdminSection({
   const [syncStatus, setSyncStatus] = useState<{
     successCount: number;
     errorCount: number;
-    details: any[];
+    details: any;
+    persistedIn?: string;
+    postgresVerification?: any;
     summary?: {
       instructoresCreados: number;
       fichasCreadas: number;
       asignacionesNuevas: number;
       asignacionesConservadas: number;
+      reemplazosRealizados?: number;
+      conflictosDetectados?: number;
       conflictos: any[];
       registrosNoModificados: number;
       errores?: string[];
     };
   } | null>(null);
+  const [activeLoadReportCategory, setActiveLoadReportCategory] = useState<string>('todos');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Student roster batch states
@@ -562,11 +567,25 @@ export default function AdminSection({
     setSyncStatus(null);
     try {
       const activeToken = await getFreshToken();
+      console.log('[PERSISTENCE_DEBUG] AdminSection.triggerDatabaseSincronizacion.datos_formulario', {
+        totalRegistros: parsedRows.length,
+        programacion: parsedRows
+      });
       const res = await uploadProgrammingGrid(activeToken, parsedRows);
+      console.log('[PERSISTENCE_DEBUG] AdminSection.triggerDatabaseSincronizacion.respuesta_backend', res);
       if (res && res.success) {
         let successCount = 0;
         let errorCount = 0;
-        if (Array.isArray(res.details)) {
+        if (res.summary) {
+          successCount =
+            (res.summary.instructoresCreados || 0) +
+            (res.summary.fichasCreadas || 0) +
+            (res.summary.asignacionesNuevas || 0) +
+            (res.summary.asignacionesConservadas || 0);
+          errorCount =
+            (res.summary.conflictosDetectados || res.summary.conflictos?.length || 0) +
+            (res.summary.registrosNoModificados || 0);
+        } else if (Array.isArray(res.details)) {
           res.details.forEach((d: any) => {
             if (d.status === 'Sincronizado') successCount++;
             else errorCount++;
@@ -580,6 +599,7 @@ export default function AdminSection({
           fichasCreadas: 0,
           asignacionesNuevas: successCount,
           asignacionesConservadas: 0,
+          reemplazosRealizados: 0,
           conflictos: [],
           registrosNoModificados: errorCount
         };
@@ -603,15 +623,20 @@ export default function AdminSection({
           successCount,
           errorCount,
           details: res.details || [],
+          persistedIn: res.persistedIn,
+          postgresVerification: res.postgresVerification,
           summary
         });
+        setActiveLoadReportCategory('todos');
 
         setParsedRows([]);
         setFile(null);
         loadInstructors(); // Refresh the credential directory list too!
+        console.log('[PERSISTENCE_DEBUG] AdminSection.triggerDatabaseSincronizacion.refetch_fichas_desde_db');
         onSuccessSync(); // Reload core App's ficha listings!
       }
     } catch (err: any) {
+      console.error('[PERSISTENCE_DEBUG] AdminSection.triggerDatabaseSincronizacion.error_escritura', err);
       alert('Fallo al cargar la programación en el servidor: ' + err.message);
     } finally {
       setLoading(false);
@@ -654,7 +679,7 @@ export default function AdminSection({
         // Validate that this is indeed an apprentice listing and not a qualifications report
         const reportType = detectExcelReportType(rows2D);
         if (reportType === 'calificaciones') {
-          throw new Error('El archivo cargado corresponde a un reporte de calificaciones y no a un listado de aprendices.');
+          throw new Error('El archivo cargado no corresponde a un reporte de aprendices por ficha.');
         }
 
         const result = parseReporteAprendicesExcel(rows2D);
@@ -736,6 +761,12 @@ export default function AdminSection({
 
         // Sync to Cloud SQL via API Route
         const activeToken = await getFreshToken();
+        console.log('[PERSISTENCE_DEBUG] AdminSection.startBatchSincronizacion.datos_formulario', {
+          archivo: item.fileName,
+          ficha: item.fichaCodigo,
+          totalAprendices: result.aprendices.length,
+          aprendices: result.aprendices
+        });
         const syncResponse = await syncLearnersToDb(
           activeToken,
           item.fichaCodigo,
@@ -745,6 +776,11 @@ export default function AdminSection({
           item.fechaFin,
           result.aprendices
         );
+        console.log('[PERSISTENCE_DEBUG] AdminSection.startBatchSincronizacion.respuesta_backend', {
+          archivo: item.fileName,
+          ficha: item.fichaCodigo,
+          response: syncResponse
+        });
 
         setBatchFiles(prev => prev.map(f => f.id === item.id ? { ...f, status: 'sincronizado', errorMsg: undefined } : f));
         successfullySynced++;
@@ -760,10 +796,12 @@ export default function AdminSection({
           conservados: syncResponse.summary?.conservados ?? 0,
           inactivados: syncResponse.summary?.inactivados ?? 0,
           reactivados: syncResponse.summary?.reactivados ?? 0,
+          persistedIn: syncResponse.persistedIn,
+          postgresVerification: syncResponse.postgresVerification,
           status: 'success'
         });
       } catch (err: any) {
-        console.error(err);
+        console.error('[PERSISTENCE_DEBUG] AdminSection.startBatchSincronizacion.error_escritura', err);
         setBatchFiles(prev => prev.map(f => f.id === item.id ? { ...f, status: 'error', errorMsg: err.message || 'Error de conexión' } : f));
         failedSynced++;
         summaries.push({
@@ -785,7 +823,147 @@ export default function AdminSection({
     setIsProcessingBatch(false);
     setBatchSyncSummary(summaries);
     setBatchSyncStatus(`Proceso de sincronización completado. Se procesaron ${pending.length} archivo(s): ${successfullySynced} cargados con éxito, ${failedSynced} fallidos.`);
+    console.log('[PERSISTENCE_DEBUG] AdminSection.startBatchSincronizacion.refetch_fichas_desde_db', {
+      successfullySynced,
+      failedSynced
+    });
     onSuccessSync(); // Refresh lists!
+  };
+
+  const getLoadReportDetails = () => {
+    const rawDetails = syncStatus?.details;
+    if (rawDetails && !Array.isArray(rawDetails)) {
+      return {
+        instructoresCreados: rawDetails.instructoresCreados || [],
+        fichasCreadas: rawDetails.fichasCreadas || [],
+        asignacionesNuevas: rawDetails.asignacionesNuevas || [],
+        asignacionesConservadas: rawDetails.asignacionesConservadas || [],
+        reemplazosRealizados: rawDetails.reemplazosRealizados || [],
+        conflictosDetectados: rawDetails.conflictosDetectados || [],
+        registrosNoModificados: rawDetails.registrosNoModificados || []
+      };
+    }
+
+    return {
+      instructoresCreados: [],
+      fichasCreadas: [],
+      asignacionesNuevas: [],
+      asignacionesConservadas: [],
+      reemplazosRealizados: [],
+      conflictosDetectados: syncStatus?.summary?.conflictos || [],
+      registrosNoModificados: []
+    };
+  };
+
+  const getLoadReportCategories = () => {
+    const details = getLoadReportDetails();
+    return [
+      {
+        key: 'instructoresCreados',
+        label: 'Instructores Creados',
+        count: syncStatus?.summary?.instructoresCreados ?? details.instructoresCreados.length,
+        tone: 'slate',
+        description: 'acciones aplicadas'
+      },
+      {
+        key: 'fichasCreadas',
+        label: 'Fichas Creadas',
+        count: syncStatus?.summary?.fichasCreadas ?? details.fichasCreadas.length,
+        tone: 'slate',
+        description: 'acciones aplicadas'
+      },
+      {
+        key: 'asignacionesNuevas',
+        label: 'Asignaciones Nuevas',
+        count: syncStatus?.summary?.asignacionesNuevas ?? details.asignacionesNuevas.length,
+        tone: 'emerald',
+        description: 'acciones aplicadas'
+      },
+      {
+        key: 'asignacionesConservadas',
+        label: 'Asignaciones Conservadas',
+        count: syncStatus?.summary?.asignacionesConservadas ?? details.asignacionesConservadas.length,
+        tone: 'blue',
+        description: 'acciones conservadas'
+      },
+      {
+        key: 'reemplazosRealizados',
+        label: 'Reemplazos Realizados',
+        count: syncStatus?.summary?.reemplazosRealizados ?? details.reemplazosRealizados.length,
+        tone: 'amber',
+        description: 'acciones aplicadas'
+      },
+      {
+        key: 'conflictosDetectados',
+        label: 'Conflictos Detectados',
+        count: syncStatus?.summary?.conflictosDetectados ?? syncStatus?.summary?.conflictos?.length ?? details.conflictosDetectados.length,
+        tone: 'rose',
+        description: 'acciones rechazadas'
+      },
+      {
+        key: 'registrosNoModificados',
+        label: 'Registros No Modificados',
+        count: syncStatus?.summary?.registrosNoModificados ?? details.registrosNoModificados.length,
+        tone: 'slate',
+        description: 'sin modificación'
+      }
+    ];
+  };
+
+  const getSelectedLoadReportRows = () => {
+    const details = getLoadReportDetails();
+    if (activeLoadReportCategory === 'todos') {
+      return Object.entries(details).flatMap(([category, rows]) =>
+        (rows as any[]).map(row => ({ ...row, category }))
+      );
+    }
+    return ((details as any)[activeLoadReportCategory] || []).map((row: any) => ({
+      ...row,
+      category: activeLoadReportCategory
+    }));
+  };
+
+  const getCategoryLabel = (category: string) => {
+    if (category === 'todos') return 'Todos los resultados';
+    return getLoadReportCategories().find(item => item.key === category)?.label || category;
+  };
+
+  const shouldShowReplacementColumns = () =>
+    activeLoadReportCategory === 'reemplazosRealizados' ||
+    getSelectedLoadReportRows().some((row: any) =>
+      row.category === 'reemplazosRealizados' ||
+      row.instructorAnteriorNombre ||
+      row.instructorNuevoNombre
+    );
+
+  const exportLoadReport = () => {
+    const rows = getSelectedLoadReportRows();
+    if (rows.length === 0) {
+      alert('No hay registros para exportar en esta categoría.');
+      return;
+    }
+
+    const exportRows = rows.map((row: any) => ({
+      Categoria: getCategoryLabel(row.category),
+      Fila: row.rowNumber || '',
+      Ficha: row.fichaCodigo || row.codigoFicha || '',
+      Programa: row.programa || '',
+      Instructor: row.instructorNombre || row.instructorNuevo || '',
+      Correo: row.instructorCorreo || row.correoInstructor || '',
+      Rol: row.rolEnFicha || row.rol || '',
+      Area: row.area || 'General',
+      InstructorAnterior: row.instructorAnteriorNombre || '',
+      CorreoAnterior: row.instructorAnteriorCorreo || '',
+      InstructorNuevo: row.instructorNuevoNombre || '',
+      CorreoNuevo: row.instructorNuevoCorreo || '',
+      Estado: row.status || '',
+      Motivo: row.reason || row.motivoDetallado || row.tipoConflicto || ''
+    }));
+
+    const worksheet = XLSX.utils.json_to_sheet(exportRows);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Informe de carga');
+    XLSX.writeFile(workbook, `informe-carga-programacion-${new Date().toISOString().slice(0, 10)}.xlsx`);
   };
 
   return (
@@ -868,7 +1046,7 @@ export default function AdminSection({
           id="admin-tab-alertas-criticas-btn"
         >
           <ShieldAlert className="w-4 h-4" />
-          <span>Alertas Críticas</span>
+          <span>Alertas Críticas y Remisiones</span>
         </button>
       </div>
 
@@ -893,112 +1071,157 @@ export default function AdminSection({
             </button>
           </div>
 
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-            {/* 1. Instructores Nuevos */}
-            <div className="p-3 bg-slate-50 border border-slate-100 rounded-lg">
-              <span className="block text-[9px] text-slate-400 uppercase font-extrabold tracking-wider">Instructores Creados</span>
-              <strong className="text-base text-slate-700 font-extrabold block mt-0.5">
-                {syncStatus.summary?.instructoresCreados ?? 0}
-              </strong>
-            </div>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <button
+              onClick={() => setActiveLoadReportCategory('todos')}
+              className={`px-3 py-1.5 rounded-lg border text-[10px] font-extrabold transition-all ${
+                activeLoadReportCategory === 'todos'
+                  ? 'bg-slate-900 text-white border-slate-900 shadow-xs'
+                  : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+              }`}
+            >
+              Ver todos los resultados
+            </button>
 
-            {/* 2. Fichas Nuevas */}
-            <div className="p-3 bg-slate-50 border border-slate-100 rounded-lg">
-              <span className="block text-[9px] text-slate-400 uppercase font-extrabold tracking-wider">Fichas Creadas</span>
-              <strong className="text-base text-slate-700 font-extrabold block mt-0.5">
-                {syncStatus.summary?.fichasCreadas ?? 0}
-              </strong>
-            </div>
-
-            {/* 3. Asignaciones Nuevas */}
-            <div className="p-3 bg-emerald-50/50 border border-emerald-100 rounded-lg">
-              <span className="block text-[9px] text-emerald-650 uppercase font-extrabold tracking-wider">Asignaciones Nuevas</span>
-              <strong className="text-base text-[#39A900] font-extrabold block mt-0.5">
-                {syncStatus.summary?.asignacionesNuevas ?? syncStatus.successCount}
-              </strong>
-            </div>
-
-            {/* 4. Asignaciones Conservadas */}
-            <div className="p-3 bg-blue-50/35 border border-blue-100 rounded-lg">
-              <span className="block text-[9px] text-blue-600 uppercase font-extrabold tracking-wider">Asignaciones Conservadas</span>
-              <strong className="text-base text-blue-700 font-extrabold block mt-0.5">
-                {syncStatus.summary?.asignacionesConservadas ?? 0}
-              </strong>
-            </div>
-
-            {/* 5. Conflictos Detectados */}
-            <div className={`p-3 border rounded-lg ${
-              (syncStatus.summary?.conflictos?.length ?? 0) > 0 
-                ? 'bg-rose-50 border-rose-100' 
-                : 'bg-slate-50 border-slate-100'
-            }`}>
-              <span className={`block text-[9px] uppercase font-extrabold tracking-wider ${
-                (syncStatus.summary?.conflictos?.length ?? 0) > 0 ? 'text-rose-600' : 'text-slate-400'
-              }`}>Conflictos Detectados</span>
-              <strong className={`text-base font-extrabold block mt-0.5 ${
-                (syncStatus.summary?.conflictos?.length ?? 0) > 0 ? 'text-rose-600' : 'text-slate-700'
-              }`}>
-                {syncStatus.summary?.conflictos?.length ?? 0}
-              </strong>
-            </div>
-
-            {/* 6. Registros No Modificados */}
-            <div className="p-3 bg-slate-50 border border-slate-100 rounded-lg">
-              <span className="block text-[9px] text-slate-400 uppercase font-extrabold tracking-wider">Registros No Modificados</span>
-              <strong className="text-base text-slate-700 font-extrabold block mt-0.5">
-                {syncStatus.summary?.registrosNoModificados ?? syncStatus.errorCount}
-              </strong>
-            </div>
+            <button
+              onClick={exportLoadReport}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-emerald-50 border border-emerald-150 text-[10px] font-extrabold text-emerald-800 rounded-lg transition-colors shadow-4xs"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>Exportar informe de carga</span>
+            </button>
           </div>
 
-          {/* List of Conflicts Ledger */}
-          {syncStatus.summary?.conflictos && syncStatus.summary.conflictos.length > 0 && (
-            <div className="border border-rose-150 rounded-lg bg-rose-50/20 overflow-hidden">
-              <div className="bg-rose-50/70 px-3 py-2 border-b border-rose-150 flex items-center justify-between">
-                <div className="flex items-center gap-1.5 text-rose-800 text-[10px] font-extrabold">
-                  <AlertTriangle className="w-3.5 h-3.5 text-rose-500" />
-                  <span>DETALLE DE CONFLICTOS Y REGISTROS SALVAGUARDADOS</span>
-                </div>
-                <span className="text-[9px] text-rose-500 font-bold bg-rose-100/60 px-1.5 py-0.5 rounded">
-                  No Sobrescritos
-                </span>
-              </div>
-              
-              <div className="divide-y divide-rose-100/50 max-h-56 overflow-y-auto">
-                {syncStatus.summary.conflictos.map((conf: any, idx: number) => (
-                  <div key={idx} className="p-3 text-[10px] space-y-1 bg-white">
-                    <div className="flex items-center justify-between">
-                      <span className="font-extrabold text-slate-700 bg-slate-100 px-1.5 py-0.5 rounded text-[9px]">
-                        Ficha {conf.codigoFicha}
-                      </span>
-                      <span className="text-rose-600 font-extrabold text-[9px] uppercase tracking-wide bg-rose-50 px-1.5 py-0.5 rounded">
-                        {conf.tipoConflicto}
-                      </span>
-                    </div>
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+            {getLoadReportCategories().map(category => {
+              const isActive = activeLoadReportCategory === category.key;
+              const toneClass =
+                category.tone === 'emerald'
+                  ? 'bg-emerald-50/50 border-emerald-100 text-[#39A900]'
+                  : category.tone === 'blue'
+                    ? 'bg-blue-50/35 border-blue-100 text-blue-700'
+                    : category.tone === 'amber'
+                      ? 'bg-amber-50 border-amber-100 text-amber-700'
+                      : category.tone === 'rose' && category.count > 0
+                        ? 'bg-rose-50 border-rose-100 text-rose-600'
+                        : 'bg-slate-50 border-slate-100 text-slate-700';
 
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-slate-600 mt-1">
-                      <div>
-                        <span className="text-[9px] text-slate-400 block font-medium">Instructor en sistema</span>
-                        <span className="font-bold text-slate-700">{conf.instructorExistente}</span>
-                      </div>
-                      <div>
-                        <span className="text-[9px] text-slate-400 block font-medium">Instructor omitido del zip/reporte</span>
-                        <span className="font-bold text-rose-600">{conf.instructorNuevo}</span>
-                      </div>
-                      <div>
-                        <span className="text-[9px] text-slate-400 block font-medium">Rol del reporte</span>
-                        <span className="font-semibold text-slate-700">{conf.rol}</span>
-                      </div>
-                      <div>
-                        <span className="text-[9px] text-slate-400 block font-medium">Área</span>
-                        <span className="font-semibold text-slate-700">{conf.area || 'General'}</span>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
+              return (
+                <button
+                  key={category.key}
+                  onClick={() => setActiveLoadReportCategory(category.key)}
+                  className={`text-left p-3 border rounded-lg transition-all cursor-pointer ${toneClass} ${
+                    isActive ? 'ring-2 ring-slate-900/10 shadow-sm scale-[1.01]' : 'hover:shadow-xs'
+                  }`}
+                >
+                  <span className="block text-[9px] uppercase font-extrabold tracking-wider opacity-75">
+                    {category.label}
+                  </span>
+                  <strong className="text-base font-extrabold block mt-0.5">
+                    {category.count}
+                  </strong>
+                  <span className="block text-[9px] font-bold mt-1 opacity-80">
+                    {isActive ? 'Detalle activo' : 'Ver detalle'} · {category.description}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          {syncStatus.postgresVerification && (
+            <div className="bg-emerald-50 border border-emerald-150 rounded-lg p-3 text-[10px] text-emerald-900 font-semibold">
+              Persistencia verificada en {syncStatus.persistedIn || 'PostgreSQL/Neon'}:
+              {' '}fichas <strong>{syncStatus.postgresVerification.fichas}</strong>,
+              {' '}instructores <strong>{syncStatus.postgresVerification.instructores}</strong>,
+              {' '}relaciones <strong>{syncStatus.postgresVerification.instructor_ficha}</strong>,
+              {' '}aprendices <strong>{syncStatus.postgresVerification.aprendices_fichas}</strong>.
             </div>
           )}
+
+          <div className="border border-slate-200 rounded-lg bg-white overflow-hidden">
+            <div className="bg-slate-50 px-3 py-2 border-b border-slate-200 flex items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5 text-slate-800 text-[10px] font-extrabold">
+                <FileCheck className="w-3.5 h-3.5 text-[#39A900]" />
+                <span>DETALLE DEL INFORME · {getCategoryLabel(activeLoadReportCategory).toUpperCase()}</span>
+              </div>
+              <span className="text-[9px] text-slate-500 font-bold bg-white border border-slate-200 px-1.5 py-0.5 rounded">
+                {getSelectedLoadReportRows().length} registro(s)
+              </span>
+            </div>
+
+            <div className="overflow-x-auto max-h-72">
+              <table className="min-w-full text-[10px]">
+                <thead className="bg-white sticky top-0 z-10 border-b border-slate-100">
+                  <tr className="text-left text-slate-400 uppercase tracking-wide">
+                    <th className="px-3 py-2 font-extrabold">Fila</th>
+                    <th className="px-3 py-2 font-extrabold">Ficha</th>
+                    <th className="px-3 py-2 font-extrabold">Programa</th>
+                    <th className="px-3 py-2 font-extrabold">Instructor</th>
+                    <th className="px-3 py-2 font-extrabold">Correo</th>
+                    <th className="px-3 py-2 font-extrabold">Rol</th>
+                    <th className="px-3 py-2 font-extrabold">Área</th>
+                    {shouldShowReplacementColumns() && (
+                      <>
+                        <th className="px-3 py-2 font-extrabold">Instructor anterior</th>
+                        <th className="px-3 py-2 font-extrabold">Correo anterior</th>
+                        <th className="px-3 py-2 font-extrabold">Instructor nuevo</th>
+                        <th className="px-3 py-2 font-extrabold">Correo nuevo</th>
+                      </>
+                    )}
+                    <th className="px-3 py-2 font-extrabold">Estado</th>
+                    <th className="px-3 py-2 font-extrabold">Motivo</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {getSelectedLoadReportRows().length === 0 ? (
+                    <tr>
+                      <td colSpan={shouldShowReplacementColumns() ? 13 : 9} className="px-3 py-6 text-center text-slate-400 font-bold">
+                        No hay registros en esta categoría.
+                      </td>
+                    </tr>
+                  ) : (
+                    getSelectedLoadReportRows().map((row: any, idx: number) => (
+                      <tr key={`${row.category}-${row.rowNumber || idx}-${idx}`} className="hover:bg-slate-50/80">
+                        <td className="px-3 py-2 font-bold text-slate-500">{row.rowNumber || '-'}</td>
+                        <td className="px-3 py-2 font-extrabold text-slate-700">{row.fichaCodigo || row.codigoFicha || '-'}</td>
+                        <td className="px-3 py-2 text-slate-600 max-w-[180px] truncate">{row.programa || '-'}</td>
+                        <td className="px-3 py-2 text-slate-700 font-semibold">{row.instructorNombre || row.instructorNuevo || '-'}</td>
+                        <td className="px-3 py-2 text-slate-500">{row.instructorCorreo || row.correoInstructor || '-'}</td>
+                        <td className="px-3 py-2 text-slate-600">{row.rolEnFicha || row.rol || '-'}</td>
+                        <td className="px-3 py-2 text-slate-600">{row.area || 'General'}</td>
+                        {shouldShowReplacementColumns() && (
+                          <>
+                            <td className="px-3 py-2 text-slate-700 font-semibold">{row.instructorAnteriorNombre || '-'}</td>
+                            <td className="px-3 py-2 text-slate-500">{row.instructorAnteriorCorreo || '-'}</td>
+                            <td className="px-3 py-2 text-slate-700 font-semibold">{row.instructorNuevoNombre || row.instructorNombre || '-'}</td>
+                            <td className="px-3 py-2 text-slate-500">{row.instructorNuevoCorreo || row.instructorCorreo || '-'}</td>
+                          </>
+                        )}
+                        <td className="px-3 py-2">
+                          <span className={`px-1.5 py-0.5 rounded text-[9px] font-extrabold uppercase ${
+                            row.status === 'conflict'
+                              ? 'bg-rose-50 text-rose-700'
+                              : row.status === 'created'
+                                ? 'bg-emerald-50 text-emerald-700'
+                                : row.status === 'updated'
+                                  ? 'bg-amber-50 text-amber-700'
+                                : row.status === 'conserved'
+                                  ? 'bg-blue-50 text-blue-700'
+                                  : 'bg-slate-100 text-slate-600'
+                          }`}>
+                            {row.status || 'registrado'}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2 text-slate-600 min-w-[220px]">
+                          {row.reason || row.motivoDetallado || row.tipoConflicto || '-'}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
         </div>
       )}
 
@@ -1228,9 +1451,9 @@ export default function AdminSection({
           <div className="bg-emerald-50 border border-emerald-250 p-4 rounded-xl flex items-start gap-3 text-xs text-emerald-950 shadow-4xs">
             <GraduationCap className="w-5 h-5 text-[#39A900] shrink-0 mt-0.5" />
             <div className="space-y-1">
-              <span className="font-extrabold font-sans">Cargar Listados de Aprendices por Ficha en Lote:</span>
+              <span className="font-extrabold font-sans">Cargar Reporte de Aprendices por Ficha en Lote:</span>
               <p className="text-slate-655 font-normal leading-relaxed">
-                Suba uno o varios reportes de matrícula o listados oficiales de aprendices inscritos en formato Excel para cada ficha del sistema. El sistema de asignación y sincronización por lote detectará automáticamente los códigos de ficha y los registrará de forma secuencial sin modificaciones manuales.
+                Suba uno o varios reportes de aprendices o listados oficiales de aprendices inscritos en formato Excel para cada ficha del sistema. El sistema de asignación y sincronización por lote detectará automáticamente los códigos de ficha y los registrará de forma secuencial sin modificaciones manuales.
               </p>
             </div>
           </div>
@@ -1276,7 +1499,7 @@ export default function AdminSection({
             <div className="space-y-3.5 animate-fade-in" id="batch-files-list">
               <div className="flex items-center justify-between border-b border-slate-100 pb-2">
                 <h4 className="text-xs font-extrabold text-slate-550 uppercase tracking-wide">
-                  Cola de Procesamiento de Reportes ({batchFiles.length})
+                  Cola de Procesamiento de Reportes de Aprendices ({batchFiles.length})
                 </h4>
                 <button
                   type="button"
@@ -1472,7 +1695,7 @@ export default function AdminSection({
                     >
                       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                         <div className="space-y-0.5">
-                          <span className="text-[10px] uppercase font-black tracking-wider text-slate-400">Reporte Procesado</span>
+                          <span className="text-[10px] uppercase font-black tracking-wider text-slate-400">Reporte de Aprendices Procesado</span>
                           <h5 className="text-xs font-bold text-slate-800 flex items-center gap-1.5 flex-wrap">
                             <span className="truncate max-w-xs">{sum.fileName}</span>
                             <span className="bg-slate-100 text-slate-700 px-2 py-0.5 rounded text-[10px] font-mono font-bold border border-slate-200">
@@ -1536,6 +1759,15 @@ export default function AdminSection({
                             <span>Filas sin aprendices válidos: <strong>{ignoredRows}</strong> ignoradas de forma controlada</span>
                           </div>
 
+                          {sum.postgresVerification && (
+                            <div className="bg-emerald-50 border border-emerald-150 rounded-lg p-2 text-[10px] text-emerald-900 font-semibold">
+                              Persistencia verificada en {sum.persistedIn || 'PostgreSQL/Neon'}:
+                              {' '}fichas <strong>{sum.postgresVerification.fichas}</strong>,
+                              {' '}aprendices <strong>{sum.postgresVerification.aprendices_fichas}</strong>,
+                              {' '}seguimientos <strong>{sum.postgresVerification.seguimientos_historico}</strong>.
+                            </div>
+                          )}
+
                           {/* WARNING IF DETECTED VERY FEW ALUMNI */}
                           {hasFewLearners && (
                             <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 flex items-start gap-2 text-[10px] text-amber-900 mt-2">
@@ -1543,7 +1775,7 @@ export default function AdminSection({
                               <div className="space-y-0.5">
                                 <span className="font-extrabold">⚠️ Alerta de Baja Detección de Aprendices:</span>
                                 <p className="text-slate-655 leading-relaxed font-normal">
-                                  Se han detectado únicamente {sum.validCount} aprendices de {sum.totalRows} filas totales en el archivo. Por favor, verifique si este archivo es efectivamente el reporte de aprendices (Matrícula / Calificaciones) o si ha seleccionado una pestaña o un reporte alternativo. El parser requiere columnas claras del listado (como Documento y Nombre).
+                                  Se han detectado únicamente {sum.validCount} aprendices de {sum.totalRows} filas totales en el archivo. Por favor, verifique si este archivo es efectivamente el reporte de aprendices por ficha o si ha seleccionado una pestaña o un reporte alternativo. El parser requiere columnas claras del listado (como Documento y Nombre).
                                 </p>
                               </div>
                             </div>
@@ -1569,6 +1801,8 @@ export default function AdminSection({
         </div>
       )}
 
+      {activeTab === 'programacion' && (
+      <>
       {/* SECCIÓN COMPLEMENTARIA: Directorio de Instructores y Credenciales de Acceso */}
       <div className="border-t border-slate-100 pt-6 mt-6 space-y-4">
         {/* Toggleable Header Container */}
@@ -2086,6 +2320,8 @@ export default function AdminSection({
           </div>
         </div>
       )}
+      </>
+      )}
 
       {activeTab === 'alertas_criticas' && (
         <AlertasCriticasSection authToken={authToken} />
@@ -2097,6 +2333,7 @@ export default function AdminSection({
 
 function AlertasCriticasSection({ authToken }: { authToken: string }) {
   const [alertas, setAlertas] = useState<any[]>([]);
+  const [remisiones, setRemisiones] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
@@ -2107,6 +2344,173 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
   const [nuevoEstado, setNuevoEstado] = useState<string>('');
   const [observacion, setObservacion] = useState<string>('');
   const [saving, setSaving] = useState(false);
+  const [selectedRemision, setSelectedRemision] = useState<any | null>(null);
+  const [bienestarEstado, setBienestarEstado] = useState('En seguimiento');
+  const [bienestarMedio, setBienestarMedio] = useState('Llamada al aprendiz');
+  const [bienestarFecha, setBienestarFecha] = useState(() => new Date().toISOString().split('T')[0]);
+  const [bienestarIntervencion, setBienestarIntervencion] = useState('');
+  const [bienestarRespuesta, setBienestarRespuesta] = useState('');
+  const [bienestarAcuerdos, setBienestarAcuerdos] = useState('');
+  const [bienestarNota, setBienestarNota] = useState('');
+  const [bienestarMode, setBienestarMode] = useState<'intervencion' | 'respuesta'>('intervencion');
+  const [bienestarSuccessMsg, setBienestarSuccessMsg] = useState<string | null>(null);
+  const [savingBienestar, setSavingBienestar] = useState(false);
+  const [expandedBienestarLogId, setExpandedBienestarLogId] = useState<string | null>(null);
+  const [respondingToBienestarLog, setRespondingToBienestarLog] = useState<{ id: string; label: string } | null>(null);
+
+  const getRemisionStatus = (remision: any): string => {
+    const raw = String(remision?.estadoRemision || '').trim();
+    const lower = raw.toLowerCase();
+    if (!raw || lower.includes('pendiente') || lower.includes('sin intervención') || lower.includes('sin intervencion') || lower.includes('no atend')) {
+      return 'Pendiente por atender';
+    }
+    if (lower.includes('cerrado') || lower.includes('finalizado') || lower.includes('cierre')) {
+      return 'Cerrado o finalizado';
+    }
+    if (lower.includes('respuesta')) {
+      return 'Con respuesta del aprendiz';
+    }
+    if (lower.includes('atendido') || lower.includes('seguimiento') || lower.includes('intervención') || lower.includes('intervencion')) {
+      return 'Atendido por Bienestar';
+    }
+    return 'Atendido por Bienestar';
+  };
+
+  const getRemisionPriority = (status: string): number => {
+    const lower = status.toLowerCase();
+    if (lower.includes('pendiente') || lower.includes('sin intervención') || lower.includes('sin intervencion') || lower.includes('no atend')) return 0;
+    if (lower.includes('cerrado') || lower.includes('finalizado')) return 2;
+    if (lower.includes('atendido') || lower.includes('respuesta') || lower.includes('seguimiento') || lower.includes('proceso') || lower.includes('intervención') || lower.includes('intervencion')) return 1;
+    return 2;
+  };
+
+  const getRemisionTime = (remision: any): number => {
+    const value = remision?.fechaRemision || remision?.fechaRegistro || remision?.fecha || remision?.createdAt;
+    const time = value ? new Date(value).getTime() : 0;
+    return Number.isFinite(time) ? time : 0;
+  };
+
+  const getAreaResponsable = (item: any): string => {
+    const text = [
+      item?.areaResponsable,
+      item?.origenRegistro,
+      item?.creadoPorRol,
+      item?.usuarioResponsableRol,
+      item?.tipoSeguimiento,
+      item?.medioComunicacion
+    ].join(' ').toLowerCase();
+    if (text.includes('remisión a bienestar') || text.includes('remision a bienestar')) return 'Instructor que remite';
+    if (text.includes('bienestar') || text.includes('administrativo') || text.includes('admin')) return 'Bienestar/Admin';
+    if (text.includes('instructor') || text.includes('llamado') || text.includes('correo de llamado')) return 'Instructor';
+    return 'Usuario del sistema';
+  };
+
+  const getStatusBadgeClass = (status: string): string => {
+    const lower = status.toLowerCase();
+    if (lower.includes('pendiente') || lower.includes('sin intervención') || lower.includes('sin intervencion')) {
+      return 'bg-rose-50 text-rose-800 border-rose-200';
+    }
+    if (lower.includes('cerrado') || lower.includes('finalizado')) {
+      return 'bg-slate-100 text-slate-700 border-slate-300';
+    }
+    if (lower.includes('atendido') || lower.includes('respuesta')) {
+      return 'bg-emerald-50 text-emerald-800 border-emerald-200';
+    }
+    if (lower.includes('fallido')) {
+      return 'bg-amber-50 text-amber-800 border-amber-200';
+    }
+    return 'bg-purple-50 text-purple-800 border-purple-200';
+  };
+
+  const truncateText = (value: string, max = 110): string => {
+    const clean = (value || '').replace(/\s+/g, ' ').trim();
+    if (clean.length <= max) return clean;
+    return `${clean.slice(0, max - 3).trim()}...`;
+  };
+
+  const getLatestBienestarLog = (remision: any): any | null => {
+    const history = remision?.historialCompartido || remision?.historial || [];
+    return history.find((item: any) => getAreaResponsable(item) === 'Bienestar/Admin') || null;
+  };
+
+  const getBitacoraLogId = (item: any, index = 0): string => {
+    return String(item?.id || item?.seguimientoId || item?.fechaRegistro || item?.fecha || `log-${index}`);
+  };
+
+  const getBitacoraLogLabel = (item: any, index = 0): string => {
+    const type = item?.tipoSeguimiento || item?.medioComunicacion || 'Seguimiento';
+    const date = item?.fecha || item?.fechaRegistro || 'Sin fecha';
+    return `${type} · ${date} · ${getBitacoraLogId(item, index)}`;
+  };
+
+  const isBienestarResponseLog = (item: any): boolean => {
+    if (getAreaResponsable(item) !== 'Bienestar/Admin') return false;
+    const text = [
+      item?.tipoSeguimiento,
+      item?.medioComunicacion,
+      item?.observacion,
+      item?.detalles,
+      item?.detalle,
+      item?.respuestaAprendiz
+    ].join(' ').toLowerCase();
+    return text.includes('respuesta') || text.includes('actualización') || text.includes('actualizacion');
+  };
+
+  const getBienestarResponseForLog = (history: any[], item: any, index = 0): any | null => {
+    const sourceId = getBitacoraLogId(item, index);
+    const sourceLabel = getBitacoraLogLabel(item, index).toLowerCase();
+    const itemTime = new Date(item?.fechaRegistro || item?.fecha || item?.createdAt || 0).getTime();
+    const normalizedItemTime = Number.isFinite(itemTime) ? itemTime : 0;
+    const responseLogs = history.filter((candidate: any) => candidate !== item && isBienestarResponseLog(candidate));
+
+    const explicitMatch = responseLogs.find((candidate: any) => {
+      const candidateText = [
+        candidate?.observacion,
+        candidate?.detalles,
+        candidate?.detalle,
+        candidate?.asunto
+      ].join(' ').toLowerCase();
+      return candidateText.includes(sourceId.toLowerCase()) || candidateText.includes(sourceLabel);
+    });
+
+    if (explicitMatch) return explicitMatch;
+
+    const mainLogs = history.filter((candidate: any) => !isBienestarResponseLog(candidate));
+    const currentMainIndex = mainLogs.indexOf(item);
+
+    return responseLogs.find((candidate: any) => {
+      const candidateTime = new Date(candidate?.fechaRegistro || candidate?.fecha || candidate?.createdAt || 0).getTime();
+      const normalizedCandidateTime = Number.isFinite(candidateTime) ? candidateTime : 0;
+      if (normalizedItemTime <= 0 || normalizedCandidateTime < normalizedItemTime) return false;
+      const previousMain = mainLogs
+        .filter((main: any) => main !== item)
+        .find((main: any) => {
+          const mainTime = new Date(main?.fechaRegistro || main?.fecha || main?.createdAt || 0).getTime();
+          return Number.isFinite(mainTime) && mainTime > normalizedItemTime && mainTime <= normalizedCandidateTime;
+        });
+      return currentMainIndex >= 0 && !previousMain;
+    }) || null;
+  };
+
+  const getUltimaIntervencionResumen = (remision: any): { meta: string; resumen: string } => {
+    const latest = getLatestBienestarLog(remision);
+    if (!latest) {
+      return {
+        meta: `${remision?.fechaRemision || 'Sin fecha'} · Instructor · Remisión recibida · Pendiente`,
+        resumen: 'Pendiente de atención por Bienestar'
+      };
+    }
+    const meta = [
+      latest.fecha || latest.fechaRegistro || 'Sin fecha',
+      getAreaResponsable(latest),
+      latest.medioComunicacion || latest.tipoSeguimiento || 'Intervención',
+      getRemisionStatus(remision) || latest.estadoNuevo
+    ].filter(Boolean).join(' · ');
+    return {
+      meta,
+      resumen: truncateText(latest.observacion || latest.detalles || latest.detalle || remision?.ultimaActuacion || '', 115)
+    };
+  };
 
   const getFreshToken = async (): Promise<string> => {
     try {
@@ -2134,7 +2538,19 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
         throw new Error('No se pudieron obtener las alertas críticas.');
       }
       const data = await res.json();
-      setAlertas(data);
+      const rawAlertas = Array.isArray(data) ? data : (data.alertas || []);
+      setAlertas(rawAlertas.map((item: any) => ({
+        ...item,
+        nombre: item.nombre || item.aprendizNombre || 'Aprendiz',
+        documento: item.documento || item.aprendizDocumento || '',
+        correo: item.correo || item.aprendizCorreo || '',
+        fichaId: item.fichaId || item.fichaCodigo || '',
+        programaFormacion: item.programaFormacion || item.programaNombre || '',
+        estadoAlerta: item.estadoAlerta || item.estado || 'Requiere intervención administrativa'
+      })));
+
+      const remisionesData = await fetchRemisionesBienestar(activeToken);
+      setRemisiones(remisionesData.remisiones || []);
     } catch (err: any) {
       console.error(err);
       setError(err.message || 'Error de conexión.');
@@ -2151,6 +2567,145 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
     setSelectedAlerta(al);
     setNuevoEstado(al.estadoAlerta || 'Requiere intervención administrativa');
     setObservacion(al.observacionAdministrativa || '');
+  };
+
+  const handleOpenRemision = (remision: any) => {
+    setSelectedRemision(remision);
+    setBienestarEstado(getRemisionStatus(remision) === 'Cerrado o finalizado' ? 'Cerrado' : 'Atendido');
+    setBienestarMedio('Llamada al aprendiz');
+    setBienestarFecha(new Date().toISOString().split('T')[0]);
+    setBienestarIntervencion('');
+    setBienestarRespuesta('');
+    setBienestarAcuerdos('');
+    setBienestarNota('');
+    setBienestarMode('intervencion');
+    setBienestarSuccessMsg(null);
+    setExpandedBienestarLogId(null);
+    setRespondingToBienestarLog(null);
+  };
+
+  const handleStartBienestarResponse = (item?: any, index = 0) => {
+    const history = selectedRemision?.historialCompartido || selectedRemision?.historial || [];
+    const target = item || history.find((hist: any) => getAreaResponsable(hist) === 'Bienestar/Admin' && !isBienestarResponseLog(hist));
+    if (!target) return;
+    const id = getBitacoraLogId(target, index);
+    setExpandedBienestarLogId(id);
+    setRespondingToBienestarLog({ id, label: getBitacoraLogLabel(target, index) });
+    setBienestarMode('respuesta');
+    setBienestarRespuesta('');
+    setBienestarAcuerdos('');
+    setBienestarNota('');
+    setTimeout(() => {
+      const el = document.getElementById('bienestar-bitacora-form');
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 50);
+  };
+
+  const handleGuardarIntervencionBienestar = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedRemision) return;
+    if (savingBienestar) return;
+    if (bienestarMode === 'intervencion' && !bienestarIntervencion.trim()) {
+      alert('La intervención realizada es obligatoria.');
+      return;
+    }
+    if (bienestarMode === 'respuesta' && !bienestarRespuesta.trim()) {
+      alert('La respuesta del aprendiz es obligatoria para registrar esta actualización.');
+      return;
+    }
+    if (bienestarMode === 'respuesta' && !respondingToBienestarLog) {
+      alert('Seleccione primero la intervención de Bienestar que desea responder o actualizar.');
+      return;
+    }
+    if (bienestarMode === 'respuesta' && respondingToBienestarLog) {
+      const history = (selectedRemision.historialCompartido || selectedRemision.historial || []) as any[];
+      const targetIndex = history.findIndex((item: any, index: number) => getBitacoraLogId(item, index) === respondingToBienestarLog.id);
+      const targetLog = targetIndex >= 0 ? history[targetIndex] : null;
+      if (targetLog && getBienestarResponseForLog(history, targetLog, targetIndex)) {
+        alert('Esta intervención ya tiene una respuesta o actualización registrada.');
+        return;
+      }
+    }
+    setSavingBienestar(true);
+
+    try {
+      const activeToken = await getFreshToken();
+      const isRespuestaMode = bienestarMode === 'respuesta';
+      const observacionEstructurada = isRespuestaMode
+        ? [
+            'Respuesta / actualización de Bienestar',
+            `Relacionado con: ${respondingToBienestarLog?.label || 'Intervención de Bienestar'}`,
+            `Fecha de registro: ${bienestarFecha}`,
+            `Respuesta del aprendiz: ${bienestarRespuesta.trim()}`,
+            `Acuerdos o compromisos: ${bienestarAcuerdos.trim() || 'No registrados'}`,
+            `Estado del caso: ${bienestarEstado}`,
+            `Observación adicional: ${bienestarNota.trim() || 'Sin observación adicional'}`
+          ].join('\n')
+        : [
+            `Tipo de intervención: ${bienestarMedio}`,
+            `Fecha de intervención: ${bienestarFecha}`,
+            `Intervención realizada: ${bienestarIntervencion.trim()}`,
+            `Estado del caso: ${bienestarEstado}`,
+            `Observación adicional: ${bienestarNota.trim() || 'Sin observación adicional'}`
+          ].join('\n');
+
+      await saveBienestarIntervencion(
+        activeToken,
+        Number(selectedRemision.aprendizFichaId),
+        {
+          tipoSeguimiento: isRespuestaMode ? 'Respuesta aprendiz - Bienestar' : 'Intervención de Bienestar',
+          medioComunicacion: isRespuestaMode ? 'Respuesta / Actualización' : bienestarMedio,
+          asunto: isRespuestaMode
+            ? `Respuesta aprendiz - Bienestar - ${selectedRemision.aprendizNombre}`
+            : `Intervención Bienestar - ${selectedRemision.aprendizNombre}`,
+          observacion: observacionEstructurada,
+          respuestaAprendiz: bienestarRespuesta.trim() || null,
+          acuerdosEstablecidos: bienestarAcuerdos.trim() || bienestarEstado,
+          compromisos: bienestarAcuerdos.trim() || null,
+          proximaAccion: bienestarNota.trim() || null,
+          fechaEnvioMensaje: bienestarFecha,
+          fechaRespuestaAprendiz: bienestarFecha,
+          estadoIntervencion: bienestarEstado,
+          diasSinAcceso: selectedRemision.diasSinAcceso || 0,
+          evidenciasPendientes: selectedRemision.evidenciasPendientes || 0,
+          totalEvidencias: selectedRemision.totalEvidencias || 0,
+          evidenciasAprobadas: selectedRemision.evidenciasAprobadas || 0,
+          evidenciasDesaprobadas: selectedRemision.evidenciasDesaprobadas || 0,
+          fechaUltimoIngreso: selectedRemision.fechaUltimoIngreso || null
+        }
+      );
+
+      setBienestarSuccessMsg(isRespuestaMode
+        ? 'Respuesta del aprendiz registrada correctamente en la bitácora.'
+        : 'Intervención registrada correctamente. Ahora puedes agregar una respuesta o actualización si aplica.'
+      );
+      setBienestarIntervencion('');
+      setBienestarRespuesta('');
+      setBienestarAcuerdos('');
+      setBienestarNota('');
+      const remisionesData = await fetchRemisionesBienestar(activeToken);
+      const nextRemisiones = remisionesData.remisiones || [];
+      setRemisiones(nextRemisiones);
+      const updatedRemision = nextRemisiones.find((item: any) => String(item.id) === String(selectedRemision.id));
+      if (updatedRemision) {
+        setSelectedRemision(updatedRemision);
+        const updatedHistory = updatedRemision.historialCompartido || updatedRemision.historial || [];
+        const latestOwnLog = updatedHistory.find((item: any) => getAreaResponsable(item) === 'Bienestar/Admin' && !isBienestarResponseLog(item));
+        if (!isRespuestaMode && latestOwnLog) {
+          const nextLabel = getBitacoraLogLabel(latestOwnLog);
+          setExpandedBienestarLogId(getBitacoraLogId(latestOwnLog));
+          setRespondingToBienestarLog({ id: getBitacoraLogId(latestOwnLog), label: nextLabel });
+        }
+      }
+      setBienestarMode(isRespuestaMode ? 'intervencion' : 'respuesta');
+      if (isRespuestaMode) {
+        setRespondingToBienestarLog(null);
+      }
+    } catch (err: any) {
+      alert(err.message || 'No fue posible registrar la intervención de Bienestar.');
+    } finally {
+      setSavingBienestar(false);
+    }
   };
 
   const handleGuardarGestion = async (e: React.FormEvent) => {
@@ -2205,17 +2760,221 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
     return matchesSearch && matchesStatus;
   });
 
+  const getStatusMatchesFilter = (status: string, filter: string): boolean => {
+    const priority = getRemisionPriority(status);
+    if (filter === 'todos') return true;
+    if (filter === 'pendientes') return priority === 0;
+    if (filter === 'atendidas') return priority === 1;
+    if (filter === 'cerradas') return priority === 2;
+    return status === filter;
+  };
+
+  const filteredRemisiones = remisiones.filter((r) => {
+    const derivedStatus = getRemisionStatus(r);
+    const text = [
+      r.aprendizNombre,
+      r.aprendizDocumento,
+      r.fichaCodigo,
+      r.programaNombre,
+      r.instructorNombre,
+      derivedStatus
+    ].join(' ').toLowerCase();
+    const matchesSearch = text.includes(searchTerm.toLowerCase());
+    const matchesStatus = getStatusMatchesFilter(derivedStatus, statusFilter);
+    return matchesSearch && matchesStatus;
+  }).sort((a, b) => {
+    const statusA = getRemisionStatus(a);
+    const statusB = getRemisionStatus(b);
+    const priorityDiff = getRemisionPriority(statusA) - getRemisionPriority(statusB);
+    if (priorityDiff !== 0) return priorityDiff;
+    return getRemisionTime(b) - getRemisionTime(a);
+  });
+
+  const remisionSummary = remisiones.reduce((acc, item) => {
+    const status = getRemisionStatus(item);
+    if (getRemisionPriority(status) === 0) acc.pendientes++;
+    else if (getRemisionPriority(status) === 1) acc.enSeguimiento++;
+    else acc.atendidas++;
+    acc.total++;
+    return acc;
+  }, { pendientes: 0, enSeguimiento: 0, atendidas: 0, total: 0 });
+
+  const remisionGroups = [
+    {
+      filterKey: 'pendientes',
+      title: 'Pendientes por atender',
+      description: 'Remisiones nuevas sin intervención registrada por Bienestar.',
+      emptyText: 'No hay remisiones pendientes por atender.',
+      items: filteredRemisiones.filter(item => getRemisionPriority(getRemisionStatus(item)) === 0),
+      badgeClass: 'bg-rose-50 text-rose-800 border-rose-200'
+    },
+    {
+      filterKey: 'atendidas',
+      title: 'Atendidas por Bienestar',
+      description: 'Casos con primera intervención o respuesta registrada por Bienestar.',
+      emptyText: 'No hay remisiones atendidas con los filtros actuales.',
+      items: filteredRemisiones.filter(item => getRemisionPriority(getRemisionStatus(item)) === 1),
+      badgeClass: 'bg-purple-50 text-purple-800 border-purple-200'
+    },
+    {
+      filterKey: 'cerradas',
+      title: 'Cerradas o finalizadas',
+      description: 'Casos cerrados o finalizados explícitamente desde Bienestar.',
+      emptyText: 'No hay remisiones cerradas o finalizadas con los filtros actuales.',
+      items: filteredRemisiones.filter(item => getRemisionPriority(getRemisionStatus(item)) === 2),
+      badgeClass: 'bg-emerald-50 text-emerald-800 border-emerald-200'
+    }
+  ];
+
+  const visibleRemisionGroups = remisionGroups.filter(group =>
+    statusFilter === 'todos' || group.filterKey === statusFilter
+  );
+
+  const summaryCards = [
+    {
+      key: 'pendientes',
+      label: 'Pendientes',
+      value: remisionSummary.pendientes,
+      className: 'border-rose-200 text-rose-700 bg-rose-50'
+    },
+    {
+      key: 'atendidas',
+      label: 'Atendidas',
+      value: remisionSummary.enSeguimiento,
+      className: 'border-purple-200 text-purple-700 bg-purple-50'
+    },
+    {
+      key: 'cerradas',
+      label: 'Cerradas / finalizadas',
+      value: remisionSummary.atendidas,
+      className: 'border-emerald-200 text-emerald-700 bg-emerald-50'
+    },
+    {
+      key: 'todos',
+      label: 'Total remisiones',
+      value: remisionSummary.total,
+      className: 'border-slate-200 text-slate-600 bg-slate-50'
+    }
+  ];
+
+  const renderRemisionesTable = (items: any[], emptyText: string) => {
+    if (items.length === 0) {
+      return (
+        <div className="p-6 text-center text-xs text-slate-500 font-semibold border-t border-slate-100">
+          {emptyText}
+        </div>
+      );
+    }
+
+    return (
+      <div className="overflow-x-auto border-t border-slate-100">
+        <table className="w-full text-left border-collapse">
+          <thead>
+            <tr className="bg-slate-50 border-b border-slate-150 text-[10px] font-black uppercase tracking-wider text-slate-500">
+              <th className="py-3 px-4">Aprendiz</th>
+              <th className="py-3 px-4">Ficha / Programa</th>
+              <th className="py-3 px-4">Instructor</th>
+              <th className="py-3 px-4 text-center">Riesgo</th>
+              <th className="py-3 px-4 text-center">Pendientes</th>
+              <th className="py-3 px-4">Estado</th>
+              <th className="py-3 px-4">Última intervención</th>
+              <th className="py-3 px-4 text-center">Acción</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100 text-xs">
+            {items.map((remision) => {
+              const estadoRemision = getRemisionStatus(remision);
+              const resumen = getUltimaIntervencionResumen(remision);
+              return (
+                <tr key={remision.id} className="hover:bg-rose-50/30 transition-colors">
+                  <td className="py-3.5 px-4">
+                    <span className="font-bold text-slate-800">{remision.aprendizNombre}</span>
+                    <span className="block text-[10px] text-slate-500 font-mono">
+                      {remision.aprendizDocumento} · {remision.aprendizCorreo || 'sin correo'}
+                    </span>
+                  </td>
+                  <td className="py-3.5 px-4">
+                    <span className="bg-slate-100 text-slate-700 border border-slate-200 font-mono font-black text-[10px] px-1.5 py-0.5 rounded">
+                      Ficha {remision.fichaCodigo || 'N/D'}
+                    </span>
+                    <span className="block text-[10px] text-slate-500 mt-1 max-w-[220px] truncate" title={remision.programaNombre}>
+                      {remision.programaNombre || 'Programa no registrado'}
+                    </span>
+                  </td>
+                  <td className="py-3.5 px-4">
+                    <span className="font-bold text-slate-700">{remision.instructorNombre || remision.usuarioResponsableNombre || 'Instructor'}</span>
+                    <span className="block text-[10px] text-slate-400">{remision.instructorCorreo || remision.instructorRol || ''}</span>
+                  </td>
+                  <td className="py-3.5 px-4 text-center">
+                    <span className="inline-flex px-2 py-1 rounded-full bg-amber-50 text-amber-800 border border-amber-200 font-black text-[10px]">
+                      {remision.nivelRiesgo || 'Sin dato'}
+                    </span>
+                  </td>
+                  <td className="py-3.5 px-4 text-center font-black text-slate-700">
+                    {remision.evidenciasPendientes ?? 'No disponible'}
+                  </td>
+                  <td className="py-3.5 px-4">
+                    <span className={`inline-flex px-2 py-0.5 rounded-full text-[10px] font-extrabold border ${getStatusBadgeClass(estadoRemision)}`}>
+                      {estadoRemision}
+                    </span>
+                  </td>
+                  <td className="py-3.5 px-4 text-[10px] text-slate-600 max-w-[260px]">
+                    <span className="block font-black text-slate-700 truncate" title={resumen.meta}>{resumen.meta}</span>
+                    <span className="block text-slate-500 mt-0.5 leading-snug" title={resumen.resumen}>{resumen.resumen}</span>
+                  </td>
+                  <td className="py-3.5 px-4 text-center">
+                    <button
+                      type="button"
+                      onClick={() => handleOpenRemision(remision)}
+                      className="bg-purple-700 hover:bg-purple-800 text-white font-extrabold text-[10.5px] px-3 py-1.5 rounded-lg shadow-sm transition-all cursor-pointer"
+                    >
+                      Ver / atender
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    );
+  };
+
   return (
     <div className="space-y-6 animate-fade-in text-left">
       {/* Overview Card */}
       <div className="bg-red-50 border border-red-200 p-4 rounded-xl flex items-start gap-3 text-xs text-red-950 shadow-4xs">
         <ShieldAlert className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
         <div className="space-y-1">
-          <span className="font-extrabold font-sans">Panel de Escalación de Alertas Críticas:</span>
+          <span className="font-extrabold font-sans">Panel de Alertas Críticas y Remisiones a Bienestar:</span>
           <p className="text-slate-655 font-normal leading-relaxed">
-            Aquí se concentran de forma automática los aprendices de cualquier ficha que han acumulado <strong>más de 3 llamados de atención académicos o de inasistencia</strong> sin resolver. Como Coordinador o Administrador, evalúe la severidad del caso, deje observaciones del trámite realizado y cambie el estado de atención.
+            Aquí se concentran los casos críticos y las remisiones enviadas por instructores a Bienestar. El área responsable puede revisar la bitácora compartida y registrar sus propias actuaciones sin modificar los registros del instructor.
           </p>
         </div>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+        {summaryCards.map(card => {
+          const isActive = statusFilter === card.key;
+          return (
+            <button
+              key={card.key}
+              type="button"
+              onClick={() => setStatusFilter(card.key)}
+              className={`text-left bg-white border rounded-xl p-4 shadow-3xs transition-all cursor-pointer ${
+                isActive
+                  ? 'ring-2 ring-purple-300 border-purple-400 bg-purple-50/60'
+                  : `${card.className} hover:shadow-sm hover:-translate-y-0.5`
+              }`}
+            >
+              <span className={`text-[10px] font-black uppercase ${isActive ? 'text-purple-900' : card.className.split(' ')[1]}`}>
+                {card.label}
+              </span>
+              <strong className="block text-2xl text-slate-900 mt-1">{card.value}</strong>
+              {isActive && <span className="inline-flex mt-2 text-[9px] font-black text-purple-800 bg-white border border-purple-200 px-2 py-0.5 rounded-full">Filtro activo</span>}
+            </button>
+          );
+        })}
       </div>
 
       {/* Filters and Search Bar */}
@@ -2239,10 +2998,9 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
             className="border border-slate-250 bg-white rounded-lg px-3 py-1.5 text-xs font-bold text-slate-700 outline-none focus:ring-1 focus:ring-red-500"
           >
             <option value="todos">Todos los Estados</option>
-            <option value="Requiere intervención administrativa">Requiere intervención administrativa</option>
-            <option value="En trámite">En trámite</option>
-            <option value="Cerrado">Cerrado</option>
-            <option value="Cerrado por mejora">Cerrado por mejora</option>
+            <option value="pendientes">Pendientes por atender</option>
+            <option value="atendidas">Atendidas / con respuesta</option>
+            <option value="cerradas">Cerradas o finalizadas</option>
           </select>
           
           <button 
@@ -2255,6 +3013,25 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
           </button>
         </div>
       </div>
+
+      {!loading && !error && (
+        <div className="space-y-4">
+          {visibleRemisionGroups.map(group => (
+            <div key={group.title} className="bg-white border border-slate-200 rounded-xl shadow-3xs overflow-hidden">
+              <div className="px-4 py-3 bg-slate-50 border-b border-slate-100 flex items-center justify-between gap-3">
+                <div>
+                  <h4 className="text-xs font-black text-slate-900 uppercase">{group.title}</h4>
+                  <p className="text-[10px] text-slate-500 font-semibold">{group.description}</p>
+                </div>
+                <span className={`border text-[10px] font-black px-2 py-1 rounded ${group.badgeClass}`}>
+                  {group.items.length} casos
+                </span>
+              </div>
+              {renderRemisionesTable(group.items, group.emptyText)}
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Data Section */}
       {loading ? (
@@ -2275,110 +3052,392 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
             Reintentar
           </button>
         </div>
-      ) : filteredAlertas.length === 0 ? (
-        <div className="py-16 text-center border border-slate-150 border-dashed rounded-xl bg-slate-50/40 space-y-3">
-          <CheckCircle className="w-12 h-12 text-[#39A900] mx-auto animate-pulse" />
-          <div className="space-y-1">
-            <h4 className="text-sm font-extrabold text-slate-800">¡No hay Alertas Críticas Vigentes!</h4>
-            <p className="text-xs text-slate-500 max-w-md mx-auto">
-              Todos los aprendices se encuentran en un margen de llamados saludable (menos de 4 llamados) o sus alertas administrativas han sido cerradas con éxito.
-            </p>
-          </div>
-        </div>
-      ) : (
-        <div className="bg-white border border-slate-200 rounded-xl shadow-3xs overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse">
-              <thead>
-                <tr className="bg-slate-50/80 border-b border-slate-150 text-[10px] font-black uppercase tracking-wider text-slate-500">
-                  <th className="py-3 px-4">Aprendiz</th>
-                  <th className="py-3 px-4">Ficha / Programa</th>
-                  <th className="py-3 px-4 text-center">Llamados</th>
-                  <th className="py-3 px-4 text-center">Inasistencia</th>
-                  <th className="py-3 px-4">Historial de Llamados</th>
-                  <th className="py-3 px-4">Estado</th>
-                  <th className="py-3 px-4 text-center">Acción</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 text-xs">
-                {filteredAlertas.map((al) => {
-                  let badgeBg = 'bg-red-50 text-red-800 border-red-200';
-                  if (al.estadoAlerta === 'En trámite') {
-                    badgeBg = 'bg-amber-50 text-amber-800 border-amber-200';
-                  } else if (al.estadoAlerta === 'Cerrado') {
-                    badgeBg = 'bg-slate-100 text-slate-700 border-slate-300';
-                  } else if (al.estadoAlerta === 'Cerrado por mejora') {
-                    badgeBg = 'bg-emerald-50 text-emerald-800 border-emerald-200';
-                  }
+      ) : null}
 
-                  return (
-                    <tr key={al.id} className="hover:bg-slate-50/50 transition-colors">
-                      <td className="py-3.5 px-4">
-                        <div className="space-y-0.5">
-                          <span className="font-bold text-slate-800 text-xs">{al.nombre}</span>
-                          <span className="block text-[10px] text-slate-500 font-mono">CC {al.documento} • {al.correo}</span>
-                        </div>
-                      </td>
-                      <td className="py-3.5 px-4">
-                        <div className="space-y-0.5 max-w-[200px]">
-                          <span className="bg-slate-100 text-slate-700 border border-slate-200 font-mono font-black text-[10px] px-1.5 py-0.5 rounded">
-                            Ficha {al.fichaId}
-                          </span>
-                          <span className="block text-[10px] text-slate-500 font-medium truncate mt-0.5" title={al.programaFormacion}>
-                            {al.programaFormacion}
-                          </span>
-                        </div>
-                      </td>
-                      <td className="py-3.5 px-4 text-center">
-                        <span className="inline-flex items-center justify-center bg-red-100 text-red-800 font-black px-2.5 py-1 rounded-full text-xs">
-                          {al.totalLlamados}
-                        </span>
-                      </td>
-                      <td className="py-3.5 px-4 text-center">
-                        <span className="font-bold text-slate-700">
-                          {al.diasSinAcceso} días
-                        </span>
-                      </td>
-                      <td className="py-3.5 px-4">
-                        <div className="max-w-[260px] space-y-1 text-[10.5px]">
-                          {al.historialLlamados && al.historialLlamados.length > 0 ? (
-                            al.historialLlamados.map((ll: any, idx: number) => (
-                              <div key={idx} className="bg-slate-50 border border-slate-100 px-2 py-1 rounded text-slate-600 font-mono leading-tight">
-                                <strong className="text-red-700"># {ll.numeroLlamado || idx + 1}:</strong> {ll.fecha} • {ll.instructor || 'Inst.'}
-                                <span className="block text-[9px] text-slate-400">Evidencias: {ll.evidenciasPendientes} • Inasistencia: {ll.diasSinAcceso}d</span>
+      {selectedRemision && (
+        <div className="fixed inset-0 bg-slate-900/65 backdrop-blur-xs flex items-center justify-center p-4 z-50 overflow-y-auto animate-fade-in" id="modal-atender-remision-bienestar">
+          <div className="bg-white rounded-2xl shadow-xl border border-slate-100 max-w-4xl w-full max-h-[92vh] flex flex-col overflow-hidden animate-scale-up text-left">
+            <div className="bg-purple-800 py-4 px-6 text-white flex items-center justify-between">
+              <div>
+                <h3 className="font-extrabold text-sm tracking-wide uppercase text-white">Atender Remisión a Bienestar</h3>
+                <p className="text-[10px] text-purple-100 font-semibold mt-0.5">
+                  Caso compartido con instructoría · Registro independiente de Bienestar
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedRemision(null)}
+                className="p-1 hover:bg-white/10 rounded-full transition-colors text-white"
+              >
+                <X className="w-5 h-5 text-white" />
+              </button>
+            </div>
+
+            <div className="overflow-y-auto p-6 space-y-4">
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                <div className="lg:col-span-1 bg-slate-50 rounded-xl p-4 border border-slate-200 text-xs space-y-2">
+                  <div>
+                    <span className="block text-[9px] font-black text-slate-400 uppercase">Aprendiz</span>
+                    <span className="font-black text-slate-800 text-sm">{selectedRemision.aprendizNombre}</span>
+                    <span className="block text-[10px] text-slate-500 font-mono">{selectedRemision.aprendizDocumento}</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 pt-2 border-t border-slate-200">
+                    <div>
+                      <span className="block text-[9px] font-black text-slate-400 uppercase">Ficha</span>
+                    <span className="font-bold text-slate-700">{selectedRemision.fichaCodigo || 'No disponible'}</span>
+                    </div>
+                    <div>
+                      <span className="block text-[9px] font-black text-slate-400 uppercase">Riesgo</span>
+                      <span className="font-bold text-amber-700">{selectedRemision.nivelRiesgo || 'Sin dato'}</span>
+                    </div>
+                    <div>
+                      <span className="block text-[9px] font-black text-slate-400 uppercase">Días sin acceso</span>
+                      <span className="font-bold text-slate-700">{selectedRemision.diasSinAcceso || 0}</span>
+                    </div>
+                    <div>
+                      <span className="block text-[9px] font-black text-slate-400 uppercase">Pendientes</span>
+                      <span className="font-bold text-slate-700">{selectedRemision.evidenciasPendientes ?? 'No disponible'}</span>
+                    </div>
+                  </div>
+                  <div className="pt-2 border-t border-slate-200">
+                    <span className="block text-[9px] font-black text-slate-400 uppercase">Programa</span>
+                    <span className="font-bold text-slate-700">{selectedRemision.programaNombre || 'No disponible'}</span>
+                  </div>
+                  <div className="pt-2 border-t border-slate-200">
+                    <span className="block text-[9px] font-black text-slate-400 uppercase">Instructor que remite</span>
+                    <span className="font-bold text-slate-700">{selectedRemision.instructorNombre || selectedRemision.usuarioResponsableNombre || 'Instructor'}</span>
+                    <span className="block text-[10px] text-slate-500">{selectedRemision.instructorCorreo || selectedRemision.instructorRol || 'No disponible'}</span>
+                  </div>
+                  <div className="pt-2 border-t border-slate-200">
+                    <span className="block text-[9px] font-black text-slate-400 uppercase">Fecha de remisión</span>
+                    <span className="font-bold text-slate-700">{selectedRemision.fechaRemision || 'No disponible'}</span>
+                  </div>
+                </div>
+
+                <div className="lg:col-span-2 bg-rose-50 rounded-xl p-4 border border-rose-100 text-xs space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <h4 className="font-black text-rose-950 uppercase text-[11px]">Remisión registrada por instructor</h4>
+                    <span className="bg-white border border-rose-200 text-rose-700 rounded px-2 py-0.5 text-[10px] font-bold">
+                      {getRemisionStatus(selectedRemision)}
+                    </span>
+                  </div>
+                  <p className="text-slate-700 whitespace-pre-wrap leading-relaxed max-h-48 overflow-y-auto bg-white border border-rose-100 rounded-lg p-3">
+                    {selectedRemision.observacion || selectedRemision.cuerpoMensaje || selectedRemision.detalles || 'Sin observación registrada.'}
+                  </p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <div className="border border-slate-200 rounded-xl overflow-hidden">
+                  <div className="bg-slate-50 px-4 py-2 border-b border-slate-200">
+                    <h4 className="text-[11px] font-black text-slate-700 uppercase">Historial compartido</h4>
+                  </div>
+                  <div className="p-3 space-y-2 max-h-80 overflow-y-auto">
+                    {(() => {
+                      const history = ((selectedRemision.historialCompartido || selectedRemision.historial || []) as any[]);
+                      const mainHistory = history.filter((item: any) => !isBienestarResponseLog(item));
+                      if (mainHistory.length === 0) {
+                        return <p className="text-xs text-slate-400 font-semibold">No hay historial asociado.</p>;
+                      }
+
+                      return mainHistory.map((item: any, index: number) => {
+                        const area = getAreaResponsable(item);
+                        const logId = getBitacoraLogId(item, index);
+                        const isExpanded = expandedBienestarLogId === logId;
+                        const isOwnBienestarLog = area === 'Bienestar/Admin';
+                        const responseLog = isOwnBienestarLog ? getBienestarResponseForLog(history, item, index) : null;
+                        const readOnlyLabel = area === 'Instructor' || area === 'Instructor que remite'
+                          ? 'Solo lectura: registro realizado por Instructor'
+                          : 'Intervención de Bienestar/Admin';
+
+                        return (
+                          <div
+                            key={logId}
+                            className={`bg-white rounded-lg text-[10.5px] border shadow-5xs overflow-hidden ${
+                              isOwnBienestarLog ? 'border-purple-150' : 'border-slate-150'
+                            }`}
+                          >
+                            <button
+                              type="button"
+                              onClick={() => setExpandedBienestarLogId(isExpanded ? null : logId)}
+                              className={`w-full p-2.5 text-left flex items-start justify-between gap-2 transition-colors ${
+                                isOwnBienestarLog ? 'hover:bg-purple-50/70' : 'hover:bg-slate-50'
+                              }`}
+                            >
+                              <div className="min-w-0">
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  <span className="font-black text-slate-800">{item.tipoSeguimiento || 'Seguimiento'}</span>
+                                  <span className={`border rounded-full px-2 py-0.5 text-[9px] font-black ${
+                                    isOwnBienestarLog
+                                      ? 'bg-purple-50 text-purple-800 border-purple-200'
+                                      : 'bg-slate-50 text-slate-600 border-slate-200'
+                                  }`}>
+                                    {area}
+                                  </span>
+                                  {responseLog && (
+                                    <span className="border rounded-full px-2 py-0.5 text-[9px] font-black bg-emerald-50 text-emerald-800 border-emerald-200">
+                                      Respuesta registrada
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="text-slate-400 mt-0.5 flex flex-wrap gap-x-2 gap-y-0.5">
+                                  <span>{item.fecha || item.fechaRegistro || 'Sin fecha'}</span>
+                                  <span>{item.medioComunicacion || 'Medio no disponible'}</span>
+                                  <span>{item.creadoPorNombre || item.usuarioResponsableNombre || 'Responsable no disponible'}</span>
+                                </div>
                               </div>
-                            ))
-                          ) : (
-                            <span className="text-slate-400 italic">No hay registros de llamados.</span>
-                          )}
-                        </div>
-                      </td>
-                      <td className="py-3.5 px-4">
-                        <div className="space-y-1">
-                          <span className={`inline-flex px-2 py-0.5 rounded-full text-[10px] font-extrabold uppercase border ${badgeBg}`}>
-                            {al.estadoAlerta}
-                          </span>
-                          {al.observacionAdministrativa && (
-                            <p className="text-[10px] text-slate-550 italic max-w-[150px] line-clamp-2" title={al.observacionAdministrativa}>
-                              "{al.observacionAdministrativa}"
-                            </p>
-                          )}
-                        </div>
-                      </td>
-                      <td className="py-3.5 px-4 text-center">
+                              {isExpanded ? (
+                                <ChevronUp className="w-4 h-4 text-slate-400 shrink-0 mt-0.5" />
+                              ) : (
+                                <ChevronDown className="w-4 h-4 text-slate-400 shrink-0 mt-0.5" />
+                              )}
+                            </button>
+
+                            {isExpanded && (
+                              <div className="px-2.5 pb-2.5 pt-1 border-t border-slate-100 space-y-2 animate-fade-in">
+                                <p className="text-slate-600 whitespace-pre-wrap leading-relaxed">
+                                  {item.observacion || item.detalles || item.detalle || 'Sin detalle'}
+                                </p>
+                                {item.respuestaAprendiz && (
+                                  <div className="bg-emerald-50 border border-emerald-100 rounded-lg p-2 text-emerald-900">
+                                    <span className="font-black block text-[9px] uppercase">Respuesta / justificación</span>
+                                    <p className="mt-0.5 whitespace-pre-wrap">{item.respuestaAprendiz}</p>
+                                  </div>
+                                )}
+                                {responseLog && (
+                                  <div className="pl-3 border-l-2 border-[#007832] bg-emerald-50/60 p-2 rounded-lg text-[10px] space-y-1">
+                                    <div className="flex items-center justify-between gap-2">
+                                      <span className="font-black text-emerald-900">{responseLog.tipoSeguimiento || 'Respuesta registrada'}</span>
+                                      <span className="text-slate-500">{responseLog.fecha || responseLog.fechaRegistro || 'Sin fecha'}</span>
+                                    </div>
+                                    <p className="text-emerald-900 whitespace-pre-wrap">
+                                      {responseLog.observacion || responseLog.detalles || responseLog.detalle || 'Respuesta registrada sin detalle adicional.'}
+                                    </p>
+                                  </div>
+                                )}
+                                <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                                  <span className="inline-flex text-[9px] font-bold bg-slate-50 text-slate-500 border border-slate-200 rounded px-1.5 py-0.5">
+                                    {readOnlyLabel}
+                                  </span>
+                                  {isOwnBienestarLog && (
+                                    responseLog ? (
+                                      <span className="inline-flex items-center gap-1 text-[9px] font-black bg-emerald-50 text-emerald-800 border border-emerald-200 rounded-lg px-2 py-1">
+                                        <Check className="w-3 h-3" />
+                                        Respuesta registrada
+                                      </span>
+                                    ) : (
+                                      <button
+                                        type="button"
+                                        onClick={() => handleStartBienestarResponse(item, index)}
+                                        className="inline-flex items-center gap-1 px-2 py-1 bg-[#007832] hover:bg-[#005c24] text-white font-black text-[9px] rounded-lg transition-colors cursor-pointer shadow-3xs"
+                                      >
+                                        <Plus className="w-3 h-3" />
+                                        <span>Agregar respuesta o actualización</span>
+                                      </button>
+                                    )
+                                  )}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      });
+                    })()}
+                  </div>
+                </div>
+
+                <form id="bienestar-bitacora-form" onSubmit={handleGuardarIntervencionBienestar} className="border border-purple-200 rounded-xl overflow-hidden">
+                  <div className="bg-purple-50 px-4 py-2 border-b border-purple-100 space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <h4 className="text-[11px] font-black text-purple-900 uppercase">
+                        {bienestarMode === 'respuesta' ? 'Agregar respuesta o actualización' : 'Registrar intervención de Bienestar'}
+                      </h4>
+                      <span className="text-[9px] font-bold text-purple-700 bg-white border border-purple-200 px-2 py-0.5 rounded-full">
+                        Bitácora compartida
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setBienestarMode('intervencion');
+                          setRespondingToBienestarLog(null);
+                        }}
+                        className={`px-2.5 py-1 rounded-lg text-[10px] font-black border transition-colors ${
+                          bienestarMode === 'intervencion'
+                            ? 'bg-purple-700 text-white border-purple-700'
+                            : 'bg-white text-purple-700 border-purple-200 hover:bg-purple-50'
+                        }`}
+                      >
+                        Registrar intervención
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleStartBienestarResponse()}
+                        disabled={!getLatestBienestarLog(selectedRemision) && !bienestarSuccessMsg}
+                        className={`px-2.5 py-1 rounded-lg text-[10px] font-black border transition-colors disabled:opacity-45 disabled:cursor-not-allowed ${
+                          bienestarMode === 'respuesta'
+                            ? 'bg-purple-700 text-white border-purple-700'
+                            : 'bg-white text-purple-700 border-purple-200 hover:bg-purple-50'
+                        }`}
+                      >
+                        Agregar respuesta o actualización
+                      </button>
+                    </div>
+                  </div>
+                  <div className="p-4 space-y-3">
+                    {bienestarSuccessMsg && (
+                      <div className="bg-emerald-50 border border-emerald-200 text-emerald-900 rounded-lg px-3 py-2 text-xs font-semibold">
+                        {bienestarSuccessMsg}
+                      </div>
+                    )}
+                    {bienestarMode === 'respuesta' && respondingToBienestarLog && (
+                      <div className="bg-blue-50 border border-blue-200 p-2.5 rounded-lg text-blue-800 text-xs flex items-center justify-between gap-2 font-medium">
+                        <span>
+                          Respondiendo o actualizando: <strong className="font-extrabold">{respondingToBienestarLog.label}</strong>
+                        </span>
                         <button
-                          onClick={() => handleOpenGestion(al)}
-                          className="bg-slate-800 hover:bg-slate-900 text-white font-extrabold text-[10.5px] px-3 py-1.5 rounded-lg shadow-sm transition-all cursor-pointer inline-flex items-center gap-1"
                           type="button"
+                          onClick={() => {
+                            setRespondingToBienestarLog(null);
+                            setBienestarMode('intervencion');
+                          }}
+                          className="text-[10px] font-bold text-blue-600 hover:text-blue-850 underline focus:outline-none shrink-0"
                         >
-                          Gestionar
+                          Cancelar respuesta
                         </button>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+                      </div>
+                    )}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-[10px] font-black text-slate-600 uppercase mb-1">
+                          {bienestarMode === 'respuesta' ? 'Tipo de actualización' : 'Tipo de comunicación o intervención'}
+                        </label>
+                        {bienestarMode === 'respuesta' ? (
+                          <input
+                            value="Respuesta / Actualización"
+                            readOnly
+                            className="w-full px-3 py-2 border border-slate-200 bg-slate-50 rounded-lg text-xs font-bold text-slate-700 outline-none"
+                          />
+                        ) : (
+                          <select
+                            value={bienestarMedio}
+                            onChange={e => setBienestarMedio(e.target.value)}
+                            className="w-full px-3 py-2 border border-slate-200 bg-white rounded-lg text-xs font-bold text-slate-800 outline-none focus:ring-1 focus:ring-purple-600"
+                          >
+                            <option value="Llamada al aprendiz">Llamada al aprendiz</option>
+                            <option value="Correo al aprendiz">Correo al aprendiz</option>
+                            <option value="Mensaje por WhatsApp">Mensaje por WhatsApp</option>
+                            <option value="Reunión virtual">Reunión virtual</option>
+                            <option value="Orientación o acompañamiento">Orientación o acompañamiento</option>
+                            <option value="Contacto fallido">Contacto fallido</option>
+                            <option value="Seguimiento del caso">Seguimiento del caso</option>
+                            <option value="Otro seguimiento">Otro seguimiento</option>
+                            <option value="Cierre del caso">Cierre del caso</option>
+                          </select>
+                        )}
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-black text-slate-600 uppercase mb-1">Fecha de intervención</label>
+                        <input
+                          type="date"
+                          value={bienestarFecha}
+                          onChange={e => setBienestarFecha(e.target.value)}
+                          className="w-full px-3 py-2 border border-slate-200 bg-white rounded-lg text-xs font-bold text-slate-800 outline-none focus:ring-1 focus:ring-purple-600"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-black text-slate-600 uppercase mb-1">Estado del caso</label>
+                        <select
+                          value={bienestarEstado}
+                          onChange={e => setBienestarEstado(e.target.value)}
+                          className="w-full px-3 py-2 border border-slate-200 bg-white rounded-lg text-xs font-bold text-slate-800 outline-none focus:ring-1 focus:ring-purple-600"
+                        >
+                          <option value="Pendiente de contacto">Pendiente de contacto</option>
+                          <option value="En seguimiento">En seguimiento</option>
+                          <option value="Atendido">Atendido</option>
+                          <option value="Contacto fallido">Contacto fallido</option>
+                          <option value="Cerrado">Cerrado</option>
+                        </select>
+                      </div>
+                    </div>
+                    {bienestarMode === 'intervencion' ? (
+                      <div>
+                        <label className="block text-[10px] font-black text-slate-600 uppercase mb-1">Observación o detalle de la intervención</label>
+                        <textarea
+                          required
+                          rows={5}
+                          value={bienestarIntervencion}
+                          onChange={e => setBienestarIntervencion(e.target.value)}
+                          placeholder="Registre la llamada, correo, WhatsApp, reunión, orientación, contacto fallido u otro seguimiento realizado."
+                          className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs font-medium focus:border-purple-600 focus:ring-1 focus:ring-purple-600 outline-none leading-relaxed"
+                        />
+                      </div>
+                    ) : (
+                      <>
+                        <div>
+                          <label className="block text-[10px] font-black text-slate-600 uppercase mb-1">Respuesta del aprendiz</label>
+                          <textarea
+                            required
+                            rows={4}
+                            value={bienestarRespuesta}
+                            onChange={e => setBienestarRespuesta(e.target.value)}
+                            placeholder="Registre la respuesta, justificación o información entregada por el aprendiz."
+                            className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs font-medium focus:border-purple-600 focus:ring-1 focus:ring-purple-600 outline-none leading-relaxed"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] font-black text-slate-600 uppercase mb-1">Acuerdos o compromisos</label>
+                          <textarea
+                            rows={3}
+                            value={bienestarAcuerdos}
+                            onChange={e => setBienestarAcuerdos(e.target.value)}
+                            placeholder="Registre compromisos, acuerdos, fechas o acciones pactadas."
+                            className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs font-medium focus:border-purple-600 focus:ring-1 focus:ring-purple-600 outline-none leading-relaxed"
+                          />
+                        </div>
+                      </>
+                    )}
+                    <div>
+                      <label className="block text-[10px] font-black text-slate-600 uppercase mb-1">Observación final o nota interna</label>
+                      <textarea
+                        rows={3}
+                        value={bienestarNota}
+                        onChange={e => setBienestarNota(e.target.value)}
+                        placeholder="Nota adicional para continuidad del caso."
+                        className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs font-medium focus:border-purple-600 focus:ring-1 focus:ring-purple-600 outline-none leading-relaxed"
+                      />
+                    </div>
+                    <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
+                      <button
+                        type="button"
+                        onClick={() => setSelectedRemision(null)}
+                        className="bg-white hover:bg-slate-50 text-slate-600 text-xs font-bold py-2 px-4 rounded-lg border border-slate-200 transition-all cursor-pointer"
+                      >
+                        Cancelar
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={savingBienestar}
+                        className="bg-purple-700 hover:bg-purple-800 disabled:bg-purple-300 text-white text-xs font-black py-2 px-5 rounded-lg shadow-md transition-all flex items-center gap-1.5 cursor-pointer"
+                      >
+                        {savingBienestar ? (
+                          <>
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            Guardando...
+                          </>
+                        ) : (
+                          <>
+                            <Check className="w-3.5 h-3.5 text-white" />
+                            {bienestarMode === 'respuesta' ? 'Registrar respuesta / actualización' : 'Registrar intervención'}
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                </form>
+              </div>
+            </div>
           </div>
         </div>
       )}

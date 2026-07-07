@@ -1,5 +1,9 @@
 import { FichaInfo, Aprendiz } from '../types';
 
+const persistenceLog = (step: string, data: unknown) => {
+  console.log(`[PERSISTENCE_DEBUG] ${step}`, data);
+};
+
 export async function fetchInstructor(token: string) {
   const res = await fetch('/api/instructor/me', {
     headers: { 'Authorization': `Bearer ${token}` }
@@ -57,19 +61,37 @@ export async function updateInstructorRole(token: string, rol: string, nombre?: 
 }
 
 export async function fetchFichas(token: string) {
+  persistenceLog('fetchFichas.request', { endpoint: '/api/fichas' });
   const res = await fetch('/api/fichas', {
     headers: { 'Authorization': `Bearer ${token}` }
   });
-  if (!res.ok) throw new Error('No se pudieron recuperar las fichas');
-  return res.json();
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => null);
+    persistenceLog('fetchFichas.error', { status: res.status, error: errorData });
+    throw new Error(errorData?.error || 'No se pudieron recuperar las fichas');
+  }
+  const data = await res.json();
+  persistenceLog('fetchFichas.response', { totalFichas: Array.isArray(data) ? data.length : null, dataSource: data?.dataSource });
+  return data;
 }
 
 export async function fetchFichaDetails(token: string, fichaCodigo: string) {
+  persistenceLog('fetchFichaDetails.request', { endpoint: `/api/fichas/${fichaCodigo}`, fichaCodigo });
   const res = await fetch(`/api/fichas/${fichaCodigo}`, {
     headers: { 'Authorization': `Bearer ${token}` }
   });
-  if (!res.ok) throw new Error('No se pudo cargar la ficha desde base de datos');
-  return res.json();
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => null);
+    persistenceLog('fetchFichaDetails.error', { status: res.status, fichaCodigo, error: errorData });
+    throw new Error(errorData?.error || 'No se pudo cargar la ficha desde base de datos');
+  }
+  const data = await res.json();
+  persistenceLog('fetchFichaDetails.response', {
+    fichaCodigo,
+    totalAprendices: Array.isArray(data?.aprendices) ? data.aprendices.length : null,
+    dataSource: data?.dataSource
+  });
+  return data;
 }
 
 export async function syncLearnersToDb(
@@ -83,27 +105,44 @@ export async function syncLearnersToDb(
   ultimoSeguimiento?: string,
   isCalificaciones?: boolean
 ) {
+  const payload = {
+    programaFormacion,
+    nivel,
+    fechaInicio,
+    fechaFin,
+    aprendices,
+    ultimoSeguimiento,
+    isCalificaciones
+  };
+  persistenceLog('syncLearnersToDb.request', {
+    endpoint: `/api/fichas/${fichaCodigo}/aprendices`,
+    fichaCodigo,
+    totalAprendices: aprendices.length,
+    payload
+  });
   const res = await fetch(`/api/fichas/${fichaCodigo}/aprendices`, {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${token}`,
       'Content-Type': 'application/json'
     },
-    body: JSON.stringify({
-      programaFormacion,
-      nivel,
-      fechaInicio,
-      fechaFin,
-      aprendices,
-      ultimoSeguimiento,
-      isCalificaciones
-    })
+    body: JSON.stringify(payload)
   });
   if (!res.ok) {
     const errorData = await res.json().catch(() => null);
+    persistenceLog('syncLearnersToDb.error', { status: res.status, fichaCodigo, error: errorData });
     throw new Error(errorData?.error || 'Error al sincronizar datos con base de datos');
   }
-  return res.json();
+  const data = await res.json();
+  persistenceLog('syncLearnersToDb.response', {
+    fichaCodigo,
+    success: data?.success,
+    persistedIn: data?.persistedIn,
+    summary: data?.summary,
+    postgresVerification: data?.postgresVerification,
+    totalAprendicesDevueltos: Array.isArray(data?.aprendices) ? data.aprendices.length : null
+  });
+  return data;
 }
 
 export async function saveIndividualIntervention(
@@ -163,6 +202,11 @@ export async function saveBulkIntervention(
 }
 
 export async function uploadProgrammingGrid(token: string, programacion: any[]) {
+  persistenceLog('uploadProgrammingGrid.request', {
+    endpoint: '/api/administrativo/programacion',
+    totalRegistros: programacion.length,
+    programacion
+  });
   const res = await fetch('/api/administrativo/programacion', {
     method: 'POST',
     headers: {
@@ -175,9 +219,18 @@ export async function uploadProgrammingGrid(token: string, programacion: any[]) 
     const errText = await res.text();
     let errJson;
     try { errJson = JSON.parse(errText); } catch { /* ignore */ }
+    persistenceLog('uploadProgrammingGrid.error', { status: res.status, error: errJson || errText });
     throw new Error(errJson?.error || 'Error al cargar programación de fichas');
   }
-  return res.json();
+  const data = await res.json();
+  persistenceLog('uploadProgrammingGrid.response', {
+    success: data?.success,
+    persistedIn: data?.persistedIn,
+    processed: data?.processed,
+    summary: data?.summary,
+    postgresVerification: data?.postgresVerification
+  });
+  return data;
 }
 
 export async function loginAsInstructorWithDb(correo: string, contrasena: string) {
@@ -261,4 +314,28 @@ export async function saveBitacoraSeguimiento(
     throw new Error(data?.error || 'Error al registrar el seguimiento en la bitácora');
   }
   return data;
+}
+
+export async function fetchRemisionesBienestar(token: string) {
+  const res = await fetch('/api/administrativo/remisiones-bienestar', {
+    headers: { 'Authorization': `Bearer ${token}` }
+  });
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => null);
+    throw new Error(errorData?.error || 'No se pudieron recuperar las remisiones a Bienestar');
+  }
+  return res.json();
+}
+
+export async function saveBienestarIntervencion(
+  token: string,
+  aprendizFichaId: number,
+  datosIntervencion: any
+) {
+  return saveBitacoraSeguimiento(token, aprendizFichaId, {
+    ...datosIntervencion,
+    origenRegistro: 'Bienestar',
+    tipoSeguimiento: datosIntervencion.tipoSeguimiento || 'Intervención de Bienestar',
+    medioComunicacion: datosIntervencion.medioComunicacion || 'Gestión interna de Bienestar'
+  });
 }

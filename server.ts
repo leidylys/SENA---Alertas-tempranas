@@ -11,7 +11,7 @@ import {
   seguimientosHistorico,
   alertasCriticas
 } from './src/db/schema.ts';
-import { eq, and, desc, gt } from 'drizzle-orm';
+import { eq, and, desc, gt, sql } from 'drizzle-orm';
 import { requireAuth, AuthRequest } from './src/middleware/auth.ts';
 
 // Robust In-Memory Backup Store for when PostgreSQL is unconfigured or offline
@@ -42,9 +42,43 @@ class MemoryBackupDB {
 
 const memoryDb = new MemoryBackupDB();
 
+const POSTGRES_PERSISTENCE_ERROR = 'No se pudo guardar en PostgreSQL/Neon. La información no fue persistida.';
+
+function isPostgresConfigured() {
+  return !!(process.env.DATABASE_URL?.trim() || process.env.SQL_HOST?.trim());
+}
+
+async function countPgRows(table: any): Promise<number> {
+  const result = await db.select({ count: sql<number>`count(*)::int` }).from(table);
+  return Number(result[0]?.count || 0);
+}
+
+async function getPostgresPersistenceCounts() {
+  return {
+    instructores: await countPgRows(instructores),
+    programas_formacion: await countPgRows(programasFormacion),
+    fichas: await countPgRows(fichas),
+    instructor_ficha: await countPgRows(instructorFicha),
+    aprendices_fichas: await countPgRows(aprendicesFichas),
+    seguimientos_historico: await countPgRows(seguimientosHistorico)
+  };
+}
+
+function maskDatabaseUrl(rawUrl?: string) {
+  if (!rawUrl) return null;
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.password) parsed.password = '***';
+    if (parsed.username) parsed.username = parsed.username ? '***' : '';
+    return parsed.toString();
+  } catch {
+    return rawUrl.replace(/:\/\/([^:@]+):([^@]+)@/, '://***:***@');
+  }
+}
+
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT) || 3000;
 
   // JSON Body Parser
   app.use(express.json({ limit: '10mb' }));
@@ -174,6 +208,42 @@ async function startServer() {
   // 1. Health-check
   app.get('/api/health', (req, res) => {
     res.json({ status: 'ok', database: 'connected_or_fallback' });
+  });
+
+  app.get('/api/dev/db-diagnostics', async (req, res) => {
+    if (process.env.NODE_ENV === 'production') {
+      return res.status(404).json({ error: 'Not found' });
+    }
+
+    const databaseUrl = process.env.DATABASE_URL?.trim();
+    try {
+      const counts = await getPostgresPersistenceCounts();
+      return res.json({
+        success: true,
+        using: 'PostgreSQL/Neon',
+        databaseUrlPresent: !!databaseUrl,
+        databaseUrl: maskDatabaseUrl(databaseUrl),
+        sqlSsl: process.env.SQL_SSL === 'true',
+        counts
+      });
+    } catch (err: any) {
+      return res.status(500).json({
+        success: false,
+        using: 'MemoryBackupDB',
+        databaseUrlPresent: !!databaseUrl,
+        databaseUrl: maskDatabaseUrl(databaseUrl),
+        sqlSsl: process.env.SQL_SSL === 'true',
+        error: err?.message || 'No fue posible consultar PostgreSQL/Neon.',
+        counts: {
+          instructores: memoryDb.instructores.length,
+          programas_formacion: memoryDb.programasFormacion.length,
+          fichas: memoryDb.fichas.length,
+          instructor_ficha: memoryDb.instructorFicha.length,
+          aprendices_fichas: memoryDb.aprendicesFichas.length,
+          seguimientos_historico: memoryDb.seguimientosHistorico.length
+        }
+      });
+    }
   });
 
   // 1b. Public helper list of instructors for testing/selection (with memory fallback)
@@ -949,6 +1019,10 @@ async function startServer() {
   app.get('/api/fichas', requireAuth, async (req: AuthRequest, res) => {
     try {
       const uid = req.user?.uid || '';
+      console.log('[PERSISTENCE_DEBUG] GET /api/fichas.inicio', {
+        uidPresent: !!uid,
+        postgresConfigured: isPostgresConfigured()
+      });
       
       // Load instructor profile
       let insRow = null;
@@ -961,6 +1035,10 @@ async function startServer() {
           insRow = memIns;
         }
       } catch (dbErr: any) {
+        if (isPostgresConfigured()) {
+          console.error('[PERSISTENCE_DEBUG] GET /api/fichas.error_perfil_postgres', dbErr?.message || dbErr);
+          return res.status(503).json({ error: 'No se pudo consultar PostgreSQL/Neon. No se mostrarán datos temporales.' });
+        }
         insRow = memIns;
       }
 
@@ -1042,9 +1120,15 @@ async function startServer() {
               countBajo
             });
           }
+          console.log('[PERSISTENCE_DEBUG] GET /api/fichas.respuesta_postgres_admin', {
+            totalFichas: completeList.length
+          });
           return res.json(completeList);
         } catch (dbErr: any) {
           console.warn('Postgres GET /fichas for Admin failed, compiling cache lists:', dbErr.message);
+          if (isPostgresConfigured()) {
+            return res.status(503).json({ error: 'No se pudo consultar PostgreSQL/Neon. No se mostrarán datos temporales.' });
+          }
           const completeList = memoryDb.fichas.map(f => {
             const prog = memoryDb.programasFormacion.find(p => p.id === f.programaId);
             const links = memoryDb.instructorFicha.filter(link => link.fichaId === f.id);
@@ -1203,9 +1287,15 @@ async function startServer() {
             countBajo
           });
         }
+        console.log('[PERSISTENCE_DEBUG] GET /api/fichas.respuesta_postgres_instructor', {
+          totalFichas: completeList.length
+        });
         return res.json(completeList);
       } catch (dbErr: any) {
         console.warn('PostgreSQL GET /fichas for Instructor failed, compiling cache lists:', dbErr.message);
+        if (isPostgresConfigured()) {
+          return res.status(503).json({ error: 'No se pudo consultar PostgreSQL/Neon. No se mostrarán datos temporales.' });
+        }
         const links = memoryDb.instructorFicha.filter(link => link.instructorId === insRow.id);
         const completeList = links.map(link => {
           const f = memoryDb.fichas.find(fi => fi.id === link.fichaId);
@@ -1378,7 +1468,7 @@ async function startServer() {
     }
   });
 
-  // 5b. Upload programming of Fichas (Admin) (with memory fallback)
+  // 5b. Upload programming of Fichas (Admin). PostgreSQL/Neon persistence is required.
   app.post('/api/administrativo/programacion', requireAuth, async (req: AuthRequest, res) => {
     try {
       const uid = req.user?.uid || '';
@@ -1401,6 +1491,11 @@ async function startServer() {
       if (!Array.isArray(programacion)) {
         return res.status(400).json({ error: 'El cuerpo debe contener un arreglo de programación' });
       }
+      console.log('[PERSISTENCE_DEBUG] POST /api/administrativo/programacion.payload', {
+        totalRegistros: programacion.length,
+        postgresConfigured: isPostgresConfigured(),
+        sample: programacion.slice(0, 3)
+      });
 
       const isLider = (rol: string) => {
         const r = (rol || '').trim().toLowerCase();
@@ -1411,7 +1506,7 @@ async function startServer() {
         return (rol || '').trim().toLowerCase().includes('transversal');
       };
 
-      // Pre-load current state from DB (and fallback to memory Db if offline)
+      // Pre-load current state from PostgreSQL. Memory data cannot confirm durable persistence.
       let allInstructors = JSON.parse(JSON.stringify(memoryDb.instructores));
       let allFichas = JSON.parse(JSON.stringify(memoryDb.fichas));
       let allProgrammes = JSON.parse(JSON.stringify(memoryDb.programasFormacion));
@@ -1457,16 +1552,96 @@ async function startServer() {
         console.warn('Postgres offline during programming load preset. Fallback to memory lists:', dbErr.message);
       }
 
+      if (!dbOnline) {
+        console.error('[PERSISTENCE_DEBUG] POST /api/administrativo/programacion.error_postgres_preload', POSTGRES_PERSISTENCE_ERROR);
+        return res.status(503).json({
+          success: false,
+          error: POSTGRES_PERSISTENCE_ERROR
+        });
+      }
+
       let countInstructoresCreados = 0;
       let countFichasCreadas = 0;
       let countAsignacionesNuevas = 0;
       let countAsignacionesConservadas = 0;
       let countRegistrosNoModificados = 0;
+      const pgSummary = {
+        programasCreados: 0,
+        programasActualizados: 0,
+        fichasCreadas: 0,
+        fichasActualizadas: 0,
+        instructoresCreados: 0,
+        instructoresModificados: 0,
+        relacionesCreadas: 0,
+        relacionesConservadas: 0
+      };
       const erroresLog: any[] = [];
       const conflictos: any[] = [];
+      const detailBuckets: Record<string, any[]> = {
+        instructoresCreados: [],
+        fichasCreadas: [],
+        asignacionesNuevas: [],
+        asignacionesConservadas: [],
+        reemplazosRealizados: [],
+        conflictosDetectados: [],
+        registrosNoModificados: []
+      };
+
+      const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      const buildDetail = (
+        rowNumber: number,
+        item: any,
+        extra: Record<string, any> = {}
+      ) => ({
+        rowNumber,
+        fichaCodigo: String(item.codigoFicha || '').trim(),
+        programa: String(item.nombrePrograma || '').trim(),
+        nivel: String(item.nivel || '').trim(),
+        fechaInicio: String(item.fechaInicio || '').trim(),
+        fechaFin: String(item.fechaFin || '').trim(),
+        instructorNombre: String(item.nombreInstructor || '').trim(),
+        instructorCorreo: String(item.correoInstructor || '').trim().toLowerCase(),
+        rolEnFicha: String(item.rolInstructor || '').trim(),
+        area: String(item.area || '').trim() || 'General',
+        ...extra
+      });
+
+      const pushConflictDetail = (
+        rowNumber: number,
+        item: any,
+        tipoConflicto: string,
+        reason: string,
+        extra: Record<string, any> = {}
+      ) => {
+        const detail = buildDetail(rowNumber, item, {
+          action: 'Registro no aplicado por conflicto',
+          reason,
+          status: 'conflict',
+          tipoConflicto,
+          ...extra
+        });
+        detailBuckets.conflictosDetectados.push(detail);
+        conflictos.push({
+          codigoFicha: detail.fichaCodigo,
+          instructorExistente: extra.instructorExistente || '',
+          instructorNuevo: detail.instructorNombre,
+          correoInstructor: detail.instructorCorreo,
+          rol: detail.rolEnFicha,
+          area: detail.area,
+          tipoConflicto,
+          motivoDetallado: reason,
+          rowNumber
+        });
+        results.push({
+          codigoFicha: detail.fichaCodigo,
+          correoInstructor: detail.instructorCorreo,
+          status: `Conflicto: ${tipoConflicto}`
+        });
+      };
 
       const results = [];
-      for (const item of programacion) {
+      for (const [index, item] of programacion.entries()) {
+        const rowNumber = index + 2;
         try {
           const {
             codigoFicha,
@@ -1480,12 +1655,48 @@ async function startServer() {
             area
           } = item;
 
-          if (!codigoFicha || !correoInstructor) {
+          const fichaValue = String(codigoFicha || '').trim();
+          const emailValue = String(correoInstructor || '').trim().toLowerCase();
+          const programValue = String(nombrePrograma || '').trim();
+          const nivelValue = String(nivel || '').trim();
+          const fechaInicioValue = String(fechaInicio || '').trim();
+          const fechaFinValue = String(fechaFin || '').trim();
+
+          if (!fichaValue) {
             countRegistrosNoModificados++;
+            pushConflictDetail(
+              rowNumber,
+              item,
+              'La ficha no tiene datos mínimos para ser creada',
+              'La fila no incluye número de ficha, por lo tanto no se aplicó.'
+            );
             continue; 
           }
 
-          const cleanEmail = correoInstructor.trim().toLowerCase();
+          if (!emailValue || !emailPattern.test(emailValue)) {
+            countRegistrosNoModificados++;
+            pushConflictDetail(
+              rowNumber,
+              item,
+              'El correo del instructor está vacío o inválido',
+              'El correo del instructor es obligatorio y debe tener formato válido.'
+            );
+            continue;
+          }
+
+          const fichaAlreadyExists = allFichas.some(f => String(f.codigoFicha) === fichaValue);
+          if (!fichaAlreadyExists && (!programValue || !nivelValue || !fechaInicioValue || !fechaFinValue)) {
+            countRegistrosNoModificados++;
+            pushConflictDetail(
+              rowNumber,
+              item,
+              'El programa, nivel, fecha inicio o fecha fin son insuficientes para crear una ficha nueva',
+              'La ficha no existía y la fila no trae todos los datos mínimos para crearla.'
+            );
+            continue;
+          }
+
+          const cleanEmail = emailValue;
           const cleanName = (nombreInstructor || '').trim() || cleanEmail.split('@')[0];
           const cleanRol = (rolInstructor || 'Instructor Técnico').trim();
           const cleanArea = area ? area.trim() : 'General';
@@ -1493,7 +1704,7 @@ async function startServer() {
 
           // Simulative lookups
           let inst = allInstructors.find(i => i.correo.toLowerCase() === cleanEmail);
-          let fich = allFichas.find(f => f.codigoFicha === codigoFicha);
+          let fich = allFichas.find(f => f.codigoFicha === fichaValue);
 
           const tempInstId = inst ? inst.id : -(allInstructors.length + 1000);
           const tempFichaId = fich ? fich.id : -(allFichas.length + 1000);
@@ -1511,13 +1722,6 @@ async function startServer() {
 
           if (exactMatch) {
             countAsignacionesConservadas++;
-            countRegistrosNoModificados++;
-            results.push({
-              codigoFicha,
-              correoInstructor,
-              status: 'Conservado'
-            });
-            continue;
           }
 
           // Rule 1. Una ficha no puede tener más de un Instructor Líder activo.
@@ -1542,20 +1746,13 @@ async function startServer() {
               existingInstName = conflictLider.instructorEmail || 'Otro Instructor';
             }
 
-            conflictos.push({
-              codigoFicha,
-              instructorExistente: existingInstName,
-              instructorNuevo: cleanName,
-              rol: cleanRol,
-              area: cleanArea,
-              tipoConflicto: 'La ficha ya posee un Instructor Líder activo'
-            });
-
-            results.push({
-              codigoFicha,
-              correoInstructor,
-              status: 'Conflicto: Multi-Lider'
-            });
+            pushConflictDetail(
+              rowNumber,
+              item,
+              'La ficha ya tiene un Instructor Líder activo',
+              `La ficha ${fichaValue} ya tiene como líder activo a ${existingInstName}; no se creó una segunda asignación líder.`,
+              { instructorExistente: existingInstName }
+            );
             continue;
           }
 
@@ -1583,20 +1780,13 @@ async function startServer() {
               existingInstName = conflictTransversal.instructorEmail || 'Otro Instructor';
             }
 
-            conflictos.push({
-              codigoFicha,
-              instructorExistente: existingInstName,
-              instructorNuevo: cleanName,
-              rol: cleanRol,
-              area: cleanArea,
-              tipoConflicto: `La ficha ya posee un Instructor Transversal activo para el área de ${cleanArea}`
-            });
-
-            results.push({
-              codigoFicha,
-              correoInstructor,
-              status: `Conflicto: Transversal duplicado en área: ${cleanArea}`
-            });
+            pushConflictDetail(
+              rowNumber,
+              item,
+              'La ficha ya tiene un Instructor Transversal activo para la misma área',
+              `La ficha ${fichaValue} ya tiene un instructor transversal activo para el área ${cleanArea}: ${existingInstName}.`,
+              { instructorExistente: existingInstName }
+            );
             continue;
           }
 
@@ -1614,7 +1804,7 @@ async function startServer() {
             allProgrammes.push(memProg);
           }
 
-          let memFicha = memoryDb.fichas.find(f => f.codigoFicha === codigoFicha);
+          let memFicha = memoryDb.fichas.find(f => f.codigoFicha === fichaValue);
           if (memFicha) {
             memFicha.fechaInicio = fechaInicio || memFicha.fechaInicio;
             memFicha.fechaFin = fechaFin || memFicha.fechaFin;
@@ -1622,7 +1812,7 @@ async function startServer() {
             countFichasCreadas++;
             memFicha = {
               id: memoryDb.fichas.length + 1,
-              codigoFicha,
+              codigoFicha: fichaValue,
               programaId: memProg.id,
               fechaInicio: fechaInicio || '2026-01-15',
               fechaFin: fechaFin || '2027-12-15',
@@ -1682,10 +1872,21 @@ async function startServer() {
           try {
             const cleanProgCode = nombrePrograma?.substring(0, 10).toUpperCase().replace(/[^A-Z0-9]/g, '') || 'PROG_GEN';
             let progId: number;
+            let rowFichaCreated = false;
+            let rowInstructorCreated = false;
+            let rowAssignmentCreated = false;
+            let rowAssignmentConserved = false;
+            let rowUnchanged = false;
 
             const existingProg = await db.select().from(programasFormacion).where(eq(programasFormacion.nombre, cleanProgName));
             if (existingProg.length > 0) {
               progId = existingProg[0].id;
+              await db.update(programasFormacion)
+                .set({
+                  nivel: nivel || existingProg[0].nivel
+                })
+                .where(eq(programasFormacion.id, progId));
+              pgSummary.programasActualizados++;
             } else {
               const newProg = await db.insert(programasFormacion)
                 .values({
@@ -1695,28 +1896,38 @@ async function startServer() {
                 })
                 .returning();
               progId = newProg[0].id;
+              pgSummary.programasCreados++;
             }
 
             let resolvedFichaId: number;
-            const existingFicha = await db.select().from(fichas).where(eq(fichas.codigoFicha, codigoFicha));
+            const existingFicha = await db.select().from(fichas).where(eq(fichas.codigoFicha, fichaValue));
             if (existingFicha.length > 0) {
               resolvedFichaId = existingFicha[0].id;
               await db.update(fichas)
                 .set({
+                  programaId: progId,
                   fechaInicio: fechaInicio || existingFicha[0].fechaInicio,
                   fechaFin: fechaFin || existingFicha[0].fechaFin
                 })
                 .where(eq(fichas.id, resolvedFichaId));
+              pgSummary.fichasActualizadas++;
             } else {
               const newFicha = await db.insert(fichas)
                 .values({
-                  codigoFicha,
+                  codigoFicha: fichaValue,
                   programaId: progId,
                   fechaInicio: fechaInicio || '2026-01-15',
                   fechaFin: fechaFin || '2027-12-15'
                 })
                 .returning();
               resolvedFichaId = newFicha[0].id;
+              pgSummary.fichasCreadas++;
+              rowFichaCreated = true;
+              detailBuckets.fichasCreadas.push(buildDetail(rowNumber, item, {
+                action: 'Ficha creada correctamente',
+                reason: 'Ficha no existía y fue creada',
+                status: 'created'
+              }));
             }
 
             let instructorId: number;
@@ -1729,6 +1940,7 @@ async function startServer() {
                   rol: cleanRol
                 })
                 .where(eq(instructores.id, instructorId));
+              pgSummary.instructoresModificados++;
             } else {
               const newInstructor = await db.insert(instructores)
                 .values({
@@ -1739,6 +1951,18 @@ async function startServer() {
                 })
                 .returning();
               instructorId = newInstructor[0].id;
+              pgSummary.instructoresCreados++;
+              rowInstructorCreated = true;
+              detailBuckets.instructoresCreados.push(buildDetail(rowNumber, item, {
+                action: 'Instructor creado correctamente',
+                reason: 'Instructor no existía y fue creado',
+                status: 'created',
+                instructorNombre: cleanName,
+                instructorCorreo: cleanEmail,
+                rolEnFicha: cleanRol,
+                area: cleanArea,
+                fichaCodigo: fichaValue
+              }));
             }
 
             const existingLink = await db.select().from(instructorFicha)
@@ -1757,19 +1981,66 @@ async function startServer() {
                   rolEnFicha: cleanRol,
                   area: cleanArea
                 });
+              pgSummary.relacionesCreadas++;
+              rowAssignmentCreated = true;
+              detailBuckets.asignacionesNuevas.push(buildDetail(rowNumber, item, {
+                action: 'Asignación creada correctamente',
+                reason: 'Asignación nueva creada',
+                status: 'created',
+                instructorNombre: cleanName,
+                instructorCorreo: cleanEmail,
+                rolEnFicha: cleanRol,
+                area: cleanArea,
+                fichaCodigo: fichaValue
+              }));
+            } else {
+              pgSummary.relacionesConservadas++;
+              rowAssignmentConserved = true;
+              detailBuckets.asignacionesConservadas.push(buildDetail(rowNumber, item, {
+                action: 'Asignación existente conservada sin duplicar',
+                reason: 'La asignación ya existía y se conservó sin duplicar',
+                status: 'conserved',
+                instructorNombre: cleanName,
+                instructorCorreo: cleanEmail,
+                rolEnFicha: cleanRol,
+                area: cleanArea,
+                fichaCodigo: fichaValue
+              }));
+            }
+
+            rowUnchanged = !rowFichaCreated && !rowInstructorCreated && !rowAssignmentCreated && rowAssignmentConserved;
+            if (rowUnchanged) {
+              detailBuckets.registrosNoModificados.push(buildDetail(rowNumber, item, {
+                action: 'Registro existente sin cambios',
+                reason: 'El registro ya existía sin cambios',
+                status: 'unchanged',
+                instructorNombre: cleanName,
+                instructorCorreo: cleanEmail,
+                rolEnFicha: cleanRol,
+                area: cleanArea,
+                fichaCodigo: fichaValue
+              }));
             }
           } catch (dbErr: any) {
-            console.log('Skipping Postgres programming row entry (normal if database offline):', dbErr.message);
+            console.error('PostgreSQL programming persistence failed:', dbErr.message);
+            throw new Error(POSTGRES_PERSISTENCE_ERROR);
           }
 
           results.push({
-            codigoFicha,
-            correoInstructor,
+            codigoFicha: fichaValue,
+            correoInstructor: cleanEmail,
             status: 'Sincronizado'
           });
 
         } catch (rowErr: any) {
           console.error('Error processing programming row:', rowErr);
+          const rowNumberFallback = Number.isFinite(rowNumber) ? rowNumber : 0;
+          detailBuckets.conflictosDetectados.push(buildDetail(rowNumberFallback, item, {
+            action: 'Registro no aplicado por conflicto',
+            reason: rowErr.message || 'Cualquier otro error de validación',
+            status: 'conflict',
+            tipoConflicto: 'Cualquier otro error de validación'
+          }));
           results.push({
             codigoFicha: item.codigoFicha,
             correoInstructor: item.correoInstructor,
@@ -1779,23 +2050,52 @@ async function startServer() {
         }
       }
 
+      if (erroresLog.includes(POSTGRES_PERSISTENCE_ERROR)) {
+        console.error('[PERSISTENCE_DEBUG] POST /api/administrativo/programacion.error_escritura', {
+          erroresLog
+        });
+        return res.status(500).json({
+          success: false,
+          error: POSTGRES_PERSISTENCE_ERROR,
+          details: results
+        });
+      }
+
+      const verificationCounts = await getPostgresPersistenceCounts();
+      console.log('[PERSISTENCE_DEBUG] POST /api/administrativo/programacion.verificacion_postgres', {
+        pgSummary,
+        verificationCounts
+      });
+
+      const detailedSummary = {
+        instructoresCreados: detailBuckets.instructoresCreados.length,
+        instructoresModificados: pgSummary.instructoresModificados,
+        fichasCreadas: detailBuckets.fichasCreadas.length,
+        fichasActualizadas: pgSummary.fichasActualizadas,
+        programasCreados: pgSummary.programasCreados,
+        programasActualizados: pgSummary.programasActualizados,
+        asignacionesNuevas: detailBuckets.asignacionesNuevas.length,
+        asignacionesConservadas: detailBuckets.asignacionesConservadas.length,
+        relacionesConservadasPostgres: pgSummary.relacionesConservadas,
+        reemplazosRealizados: detailBuckets.reemplazosRealizados.length,
+        conflictosDetectados: detailBuckets.conflictosDetectados.length,
+        conflictos,
+        registrosNoModificados: detailBuckets.registrosNoModificados.length,
+        errores: erroresLog
+      };
+
       return res.json({ 
         success: true, 
         processed: results.length, 
-        details: results,
-        summary: {
-          instructoresCreados: countInstructoresCreados,
-          fichasCreadas: countFichasCreadas,
-          asignacionesNuevas: countAsignacionesNuevas,
-          asignacionesConservadas: countAsignacionesConservadas,
-          conflictos: conflictos,
-          registrosNoModificados: countRegistrosNoModificados + conflictos.length,
-          errores: erroresLog
-        }
+        results,
+        details: detailBuckets,
+        persistedIn: 'PostgreSQL/Neon',
+        postgresVerification: verificationCounts,
+        summary: detailedSummary
       });
     } catch (err: any) {
       console.error('Error uploading programming:', err);
-      return res.status(500).json({ error: 'Error interno guardando la programación' });
+      return res.status(500).json({ success: false, error: err.message || POSTGRES_PERSISTENCE_ERROR });
     }
   });
 
@@ -1853,6 +2153,10 @@ async function startServer() {
   app.get('/api/fichas/:fichaCodigo', requireAuth, async (req: AuthRequest, res) => {
     try {
       const { fichaCodigo } = req.params;
+      console.log('[PERSISTENCE_DEBUG] GET /api/fichas/:fichaCodigo.inicio', {
+        fichaCodigo,
+        postgresConfigured: isPostgresConfigured()
+      });
 
       const memFicha = memoryDb.fichas.find(f => f.codigoFicha === fichaCodigo);
       const memProg = memFicha ? memoryDb.programasFormacion.find(p => p.id === memFicha.programaId) : null;
@@ -1861,8 +2165,8 @@ async function startServer() {
       try {
         const fichaResult = await db.select().from(fichas).where(eq(fichas.codigoFicha, fichaCodigo));
         if (fichaResult.length === 0) {
-          if (!memFicha) {
-            return res.status(404).json({ error: 'Ficha no registrada en el sistema' });
+          if (isPostgresConfigured() || !memFicha) {
+            return res.status(404).json({ error: 'Ficha no registrada en PostgreSQL/Neon' });
           }
           throw new Error('Fallback check');
         }
@@ -1969,7 +2273,13 @@ async function startServer() {
           });
         }
 
+        console.log('[PERSISTENCE_DEBUG] GET /api/fichas/:fichaCodigo.respuesta_postgres', {
+          fichaCodigo,
+          fichaId: selectedFicha.id,
+          totalAprendices: completeLearners.length
+        });
         return res.json({
+          dataSource: 'PostgreSQL/Neon',
           ficha: {
             id: selectedFicha.id,
             codigoFicha: selectedFicha.codigoFicha,
@@ -1983,6 +2293,9 @@ async function startServer() {
         });
       } catch (dbErr: any) {
         console.warn('Postgres single ficha details fetch bypassed:', dbErr.message);
+        if (isPostgresConfigured()) {
+          return res.status(503).json({ error: 'No se pudo consultar PostgreSQL/Neon. No se mostrarán datos temporales.' });
+        }
         if (!memFicha) {
           return res.status(404).json({ error: 'Ficha no registrada en el sistema' });
         }
@@ -2042,6 +2355,7 @@ async function startServer() {
         });
 
         return res.json({
+          dataSource: 'MemoryBackupDB',
           ficha: {
             id: memFicha.id,
             codigoFicha: memFicha.codigoFicha,
@@ -2060,7 +2374,7 @@ async function startServer() {
     }
   });
 
-  // 7. Save / Sync Learner records from Excel upload session (with memory fallback)
+  // 7. Save / Sync Learner records from Excel upload session. PostgreSQL/Neon persistence is required.
   app.post('/api/fichas/:fichaCodigo/aprendices', requireAuth, async (req: AuthRequest, res) => {
     try {
       const { fichaCodigo } = req.params;
@@ -2070,6 +2384,13 @@ async function startServer() {
       if (!fichaCodigo || !aprendices) {
         return res.status(400).json({ error: 'Falta el código de la ficha o la lista de aprendices' });
       }
+      console.log('[PERSISTENCE_DEBUG] POST /api/fichas/:fichaCodigo/aprendices.payload', {
+        fichaCodigo,
+        totalAprendices: Array.isArray(aprendices) ? aprendices.length : null,
+        isCalificaciones: !!req.body.isCalificaciones,
+        postgresConfigured: isPostgresConfigured(),
+        sample: Array.isArray(aprendices) ? aprendices.slice(0, 3) : null
+      });
 
       // Find the instructor profile by Auth UID
       let insRecord: any = null;
@@ -2078,11 +2399,10 @@ async function startServer() {
         if (list.length > 0) {
           insRecord = list[0];
         }
-      } catch (e) {
-        // Offline / dev mode
-      }
-      if (!insRecord) {
-        insRecord = memoryDb.instructores.find(i => i.uid === uid);
+      } catch (e: any) {
+        console.error('PostgreSQL instructor lookup failed during learners upload:', e?.message || e);
+        console.error('[PERSISTENCE_DEBUG] POST /api/fichas/:fichaCodigo/aprendices.error_perfil_postgres', e?.message || e);
+        return res.status(503).json({ success: false, error: POSTGRES_PERSISTENCE_ERROR });
       }
 
       if (!insRecord) {
@@ -2102,12 +2422,14 @@ async function startServer() {
         if (existingPgFicha.length > 0) {
           pgFichaId = existingPgFicha[0].id;
         }
-      } catch (e) {
-        // Offline / dev mode bypass
+      } catch (e: any) {
+        console.error('PostgreSQL ficha lookup failed during learners upload:', e?.message || e);
+        console.error('[PERSISTENCE_DEBUG] POST /api/fichas/:fichaCodigo/aprendices.error_ficha_postgres', e?.message || e);
+        return res.status(503).json({ success: false, error: POSTGRES_PERSISTENCE_ERROR });
       }
 
       // 2. Validator: Ficha existence check
-      if (!memFicha && !pgFichaId) {
+      if (!pgFichaId) {
         return res.status(404).json({
           error: `Ficha no registrada: La ficha con código ${fichaCodigo} no existe en el sistema. Asegúrate de que la Coordinación Académica configure o cargue primero la programación de esta ficha antes de asociarle un listado de aprendices.`
         });
@@ -2138,15 +2460,9 @@ async function startServer() {
             if (links.length > 0) {
               isAssociated = true;
             }
-          } catch (e) {
-            // Offline / db bypass
-          }
-        }
-
-        if (!isAssociated && memFicha) {
-          const memLink = memoryDb.instructorFicha.some(link => link.instructorId === insRecord.id && link.fichaId === memFicha.id);
-          if (memLink) {
-            isAssociated = true;
+          } catch (e: any) {
+            console.error('PostgreSQL instructor-ficha lookup failed during learners upload:', e?.message || e);
+            return res.status(503).json({ success: false, error: POSTGRES_PERSISTENCE_ERROR });
           }
         }
 
@@ -2470,7 +2786,15 @@ async function startServer() {
 
           finalSummary = pgSummary;
         } catch (dbErr: any) {
-          console.warn('PostgreSQL syncLearnersToDb offline bypass executed:', dbErr.message);
+          console.error('PostgreSQL learners persistence failed:', dbErr.message);
+          console.error('[PERSISTENCE_DEBUG] POST /api/fichas/:fichaCodigo/aprendices.error_escritura', {
+            fichaCodigo,
+            error: dbErr.message
+          });
+          return res.status(500).json({
+            success: false,
+            error: POSTGRES_PERSISTENCE_ERROR
+          });
         }
       }
 
@@ -2479,24 +2803,40 @@ async function startServer() {
       if (pgFichaId) {
         try {
           finalLearnersList = await db.select().from(aprendicesFichas).where(eq(aprendicesFichas.fichaId, pgFichaId));
-        } catch (e) {
-          // offline/fallback
+          console.log('[PERSISTENCE_DEBUG] POST /api/fichas/:fichaCodigo/aprendices.consulta_post_guardado', {
+            fichaCodigo,
+            fichaId: pgFichaId,
+            totalAprendices: finalLearnersList.length
+          });
+        } catch (e: any) {
+          console.error('PostgreSQL learners verification query failed:', e?.message || e);
+          console.error('[PERSISTENCE_DEBUG] POST /api/fichas/:fichaCodigo/aprendices.error_verificacion', e?.message || e);
+          return res.status(500).json({
+            success: false,
+            error: POSTGRES_PERSISTENCE_ERROR
+          });
         }
       }
-      if (finalLearnersList.length === 0 && memFicha) {
-        finalLearnersList = memoryDb.aprendicesFichas.filter(l => l.fichaId === memFicha.id);
-      }
+
+      const verificationCounts = await getPostgresPersistenceCounts();
+      console.log('[PERSISTENCE_DEBUG] POST /api/fichas/:fichaCodigo/aprendices.verificacion_postgres', {
+        fichaCodigo,
+        pgSummary,
+        verificationCounts
+      });
 
       return res.json({
         success: true,
-        fichaId: memFicha ? memFicha.id : pgFichaId,
+        persistedIn: 'PostgreSQL/Neon',
+        fichaId: pgFichaId,
         summary: finalSummary,
+        postgresVerification: verificationCounts,
         aprendices: finalLearnersList,
         warnings: warnings
       });
     } catch (err: any) {
       console.error('Error synchronizing learner data:', err);
-      return res.status(500).json({ error: 'Error del sistema al guardar datos' });
+      return res.status(500).json({ success: false, error: err.message || POSTGRES_PERSISTENCE_ERROR });
     }
   });
 
@@ -3261,8 +3601,7 @@ ${mensaje}`;
         detalleEvidenciasPendientes,
         creadoPorNombre,
         creadoPorRol,
-        origenRegistro,
-        parentSeguimientoId
+        origenRegistro
       } = req.body;
 
       // Find the student in PostgreSQL. memoryDb is not valid persistence.
@@ -3308,6 +3647,13 @@ ${mensaje}`;
           nextIntervention = 'Cerrado';
         } else if (uiState === 'Remitido a Bienestar') {
           nextIntervention = 'Remitido a Bienestar';
+        } else if (
+          uiState === 'Pendiente de atención por Bienestar' ||
+          uiState === 'En seguimiento por Bienestar' ||
+          uiState === 'Atendido por Bienestar' ||
+          uiState === 'Contacto fallido'
+        ) {
+          nextIntervention = uiState;
         } else if (uiState === 'Acuerdo establecido' || uiState === 'Intervenido') {
           nextIntervention = 'Intervenido';
         } else {
@@ -3316,10 +3662,32 @@ ${mensaje}`;
       } else {
         if (tipoSeguimiento === 'Cierre del caso') {
           nextIntervention = 'Cerrado';
-        } else if (tipoSeguimiento === 'Remitido a Bienestar') {
+        } else if (tipoSeguimiento === 'Remitido a Bienestar' || tipoSeguimiento === 'Remisión a Bienestar') {
           nextIntervention = 'Remitido a Bienestar';
         } else if (tipoSeguimiento === 'Llamado académico' || tipoSeguimiento === 'Plan de mejora' || tipoSeguimiento === 'Acuerdo académico') {
           nextIntervention = 'En seguimiento';
+        }
+      }
+
+      if (tipoSeguimiento === 'Remisión a Bienestar') {
+        const targetDate = fechaEnvioMensaje || new Date().toISOString().split('T')[0];
+        const existingReferrals = await db.select()
+          .from(seguimientosHistorico)
+          .where(and(
+            eq(seguimientosHistorico.aprendizFichaId, pgStudent.id),
+            eq(seguimientosHistorico.instructorId, insId),
+            eq(seguimientosHistorico.tipoSeguimiento, 'Remisión a Bienestar')
+          ));
+        const duplicatedReferral = existingReferrals.some((log: any) => {
+          const logDate = log.fechaEnvioMensaje || (log.fecha ? new Date(log.fecha).toISOString().split('T')[0] : '');
+          return logDate === targetDate;
+        });
+
+        if (duplicatedReferral) {
+          return res.status(409).json({
+            success: false,
+            error: 'Esta remisión ya fue registrada previamente.'
+          });
         }
       }
 
@@ -3369,8 +3737,7 @@ ${mensaje}`;
             creadoPorNombre: creadoPorNombre || insRecord.nombre,
             creadoPorRol: creadoPorRol || insRecord.rol,
             editablePorRol: insRecord.rol,
-            origenRegistro: origenRegistro || 'Instructor',
-            parentSeguimientoId: parentSeguimientoId ? Number(parentSeguimientoId) : null
+            origenRegistro: origenRegistro || 'Instructor'
           })
           .returning({ id: seguimientosHistorico.id });
 
@@ -3427,8 +3794,7 @@ ${mensaje}`;
           creadoPorNombre: creadoPorNombre || insRecord.nombre,
           creadoPorRol: creadoPorRol || insRecord.rol,
           editablePorRol: insRecord.rol,
-          origenRegistro: origenRegistro || 'Instructor',
-          parentSeguimientoId: parentSeguimientoId ? Number(parentSeguimientoId) : null
+          origenRegistro: origenRegistro || 'Instructor'
         });
 
       }
@@ -3465,8 +3831,7 @@ ${mensaje}`;
           evidenciasDesaprobadas: Number(evidenciasDesaprobadas || 0),
           origenRegistro: origenRegistro || 'Instructor',
           creadoPorNombre: creadoPorNombre || insRecord.nombre,
-          usuarioResponsableNombre: insRecord.nombre,
-          parentSeguimientoId: parentSeguimientoId ? Number(parentSeguimientoId) : null
+          usuarioResponsableNombre: insRecord.nombre
         }
       });
 
@@ -3525,8 +3890,7 @@ ${mensaje}`;
           creadoPorNombre: seguimientosHistorico.creadoPorNombre,
           creadoPorRol: seguimientosHistorico.creadoPorRol,
           editablePorRol: seguimientosHistorico.editablePorRol,
-          origenRegistro: seguimientosHistorico.origenRegistro,
-          parentSeguimientoId: seguimientosHistorico.parentSeguimientoId
+          origenRegistro: seguimientosHistorico.origenRegistro
         })
         .from(seguimientosHistorico)
         .leftJoin(instructores, eq(seguimientosHistorico.instructorId, instructores.id))
@@ -3570,8 +3934,7 @@ ${mensaje}`;
           creadoPorNombre: log.creadoPorNombre,
           creadoPorRol: log.creadoPorRol,
           editablePorRol: log.editablePorRol,
-          origenRegistro: log.origenRegistro,
-          parentSeguimientoId: log.parentSeguimientoId
+          origenRegistro: log.origenRegistro
         }));
 
         return res.json({ success: true, seguimientos: normalizedLogs });
@@ -3621,8 +3984,7 @@ ${mensaje}`;
             creadoPorNombre: log.creadoPorNombre,
             creadoPorRol: log.creadoPorRol,
             editablePorRol: log.editablePorRol,
-            origenRegistro: log.origenRegistro,
-            parentSeguimientoId: log.parentSeguimientoId
+            origenRegistro: log.origenRegistro
           };
         });
 
@@ -3718,7 +4080,245 @@ ${mensaje}`;
     }
   });
 
-  // 11. Fetch critical alerts escalated to administrative area
+  // 11. Fetch Bienestar referrals registered as regular bitacora entries
+  app.get('/api/administrativo/remisiones-bienestar', requireAuth, async (req: AuthRequest, res) => {
+    const getLogArea = (log: any): string => {
+      const text = [
+        log?.origenRegistro,
+        log?.creadoPorRol,
+        log?.usuarioResponsableRol,
+        log?.tipoSeguimiento,
+        log?.medioComunicacion
+      ].join(' ').toLowerCase();
+      if (text.includes('remisión a bienestar') || text.includes('remision a bienestar')) return 'Instructor que remite';
+      if (text.includes('bienestar') || text.includes('administrativo') || text.includes('admin')) return 'Bienestar/Admin';
+      if (text.includes('instructor') || text.includes('llamado') || text.includes('correo de llamado')) return 'Instructor';
+      return 'Usuario del sistema';
+    };
+
+    const isBienestarIntervention = (log: any): boolean => {
+      const tipo = String(log?.tipoSeguimiento || '').toLowerCase();
+      const medio = String(log?.medioComunicacion || '').toLowerCase();
+      const origen = String(log?.origenRegistro || '').toLowerCase();
+      const rol = String(log?.creadoPorRol || '').toLowerCase();
+      if (tipo.includes('remisión a bienestar') || tipo.includes('remision a bienestar') || medio.includes('remisión interna a bienestar') || medio.includes('remision interna a bienestar')) {
+        return false;
+      }
+      return tipo.includes('intervención de bienestar') ||
+        tipo.includes('intervencion de bienestar') ||
+        medio.includes('gestión interna de bienestar') ||
+        medio.includes('gestion interna de bienestar') ||
+        origen.includes('bienestar') ||
+        rol.includes('bienestar') ||
+        rol.includes('administrativo') ||
+        rol.includes('admin');
+    };
+
+    const deriveReferralStatus = (intervention: any): string => {
+      if (!intervention) return 'Pendiente por atender';
+      const text = [
+        intervention?.estadoNuevo,
+        intervention?.tipoSeguimiento,
+        intervention?.medioComunicacion,
+        intervention?.observacion
+      ].join(' ').toLowerCase();
+      if (text.includes('atendido') || text.includes('cerrado') || text.includes('finalizado') || text.includes('cierre')) {
+        if (text.includes('cerrado') || text.includes('finalizado') || text.includes('cierre')) {
+          return 'Cerrado o finalizado';
+        }
+        return 'Atendido por Bienestar';
+      }
+      if (
+        (text.includes('respuesta del aprendiz') && !text.includes('no registrada')) ||
+        text.includes('respuesta / actualización') ||
+        text.includes('respuesta / actualizacion')
+      ) {
+        return 'Con respuesta del aprendiz';
+      }
+      return 'Atendido por Bienestar';
+    };
+
+    const getReferralPriority = (status: string): number => {
+      const lower = status.toLowerCase();
+      if (lower.includes('pendiente') || lower.includes('sin intervención') || lower.includes('sin intervencion') || lower.includes('no atend')) return 0;
+      if (lower.includes('seguimiento') || lower.includes('proceso') || lower.includes('intervención') || lower.includes('intervencion')) return 1;
+      return 2;
+    };
+
+    const sortRemisiones = (items: any[]) => items.sort((a: any, b: any) => {
+      const priorityDiff = getReferralPriority(a.estadoRemision) - getReferralPriority(b.estadoRemision);
+      if (priorityDiff !== 0) return priorityDiff;
+      const timeA = a.fechaRemision ? new Date(a.fechaRemision).getTime() : 0;
+      const timeB = b.fechaRemision ? new Date(b.fechaRemision).getTime() : 0;
+      return (Number.isFinite(timeB) ? timeB : 0) - (Number.isFinite(timeA) ? timeA : 0);
+    });
+
+    try {
+      try {
+        const referralRows = await db.select({
+          id: seguimientosHistorico.id,
+          aprendizFichaId: seguimientosHistorico.aprendizFichaId,
+          instructorId: seguimientosHistorico.instructorId,
+          fecha: seguimientosHistorico.fecha,
+          estadoNuevo: seguimientosHistorico.estadoNuevo,
+          detalles: seguimientosHistorico.detalles,
+          tipoSeguimiento: seguimientosHistorico.tipoSeguimiento,
+          medioComunicacion: seguimientosHistorico.medioComunicacion,
+          fechaRegistro: seguimientosHistorico.fechaRegistro,
+          fechaEnvioMensaje: seguimientosHistorico.fechaEnvioMensaje,
+          asunto: seguimientosHistorico.asunto,
+          observacion: seguimientosHistorico.observacion,
+          acuerdosEstablecidos: seguimientosHistorico.acuerdosEstablecidos,
+          compromisos: seguimientosHistorico.compromisos,
+          proximaAccion: seguimientosHistorico.proximaAccion,
+          creadoPorNombre: seguimientosHistorico.creadoPorNombre,
+          creadoPorRol: seguimientosHistorico.creadoPorRol,
+          origenRegistro: seguimientosHistorico.origenRegistro,
+          aprendizNombre: aprendicesFichas.nombre,
+          aprendizDocumento: aprendicesFichas.documento,
+          aprendizCorreo: aprendicesFichas.correo,
+          aprendizTelefono: aprendicesFichas.telefono,
+          nivelRiesgo: aprendicesFichas.nivelRiesgo,
+          estadoIntervencion: aprendicesFichas.estadoIntervencion,
+          diasSinAcceso: aprendicesFichas.diasSinAcceso,
+          evidenciasPendientes: seguimientosHistorico.evidenciasPendientes,
+          fichaCodigo: fichas.codigoFicha,
+          programaNombre: programasFormacion.nombre,
+          instructorNombre: instructores.nombre,
+          instructorCorreo: instructores.correo,
+          instructorRol: instructores.rol
+        })
+        .from(seguimientosHistorico)
+        .leftJoin(aprendicesFichas, eq(seguimientosHistorico.aprendizFichaId, aprendicesFichas.id))
+        .leftJoin(fichas, eq(aprendicesFichas.fichaId, fichas.id))
+        .leftJoin(programasFormacion, eq(fichas.programaId, programasFormacion.id))
+        .leftJoin(instructores, eq(seguimientosHistorico.instructorId, instructores.id))
+        .where(eq(seguimientosHistorico.tipoSeguimiento, 'Remisión a Bienestar'))
+        .orderBy(desc(seguimientosHistorico.fecha));
+
+        const remisiones = await Promise.all(referralRows.map(async (row: any) => {
+          const learnerHistory = await db.select({
+            id: seguimientosHistorico.id,
+            fecha: seguimientosHistorico.fecha,
+            tipoSeguimiento: seguimientosHistorico.tipoSeguimiento,
+            medioComunicacion: seguimientosHistorico.medioComunicacion,
+            observacion: seguimientosHistorico.observacion,
+            detalles: seguimientosHistorico.detalles,
+            estadoNuevo: seguimientosHistorico.estadoNuevo,
+            creadoPorNombre: seguimientosHistorico.creadoPorNombre,
+            creadoPorRol: seguimientosHistorico.creadoPorRol,
+            origenRegistro: seguimientosHistorico.origenRegistro
+          })
+          .from(seguimientosHistorico)
+          .where(eq(seguimientosHistorico.aprendizFichaId, row.aprendizFichaId))
+          .orderBy(desc(seguimientosHistorico.fecha));
+
+          const historialCompartido = learnerHistory.map((log: any) => ({
+            id: String(log.id),
+            fecha: log.fecha ? log.fecha.toISOString().split('T')[0] : '',
+            tipoSeguimiento: log.tipoSeguimiento,
+            medioComunicacion: log.medioComunicacion,
+            observacion: log.observacion || log.detalles,
+            estadoNuevo: log.estadoNuevo,
+            creadoPorNombre: log.creadoPorNombre,
+            creadoPorRol: log.creadoPorRol,
+            origenRegistro: log.origenRegistro,
+            areaResponsable: getLogArea(log)
+          }));
+
+          const ultimaIntervencion = historialCompartido.find((log: any) => isBienestarIntervention(log));
+          const estadoRemision = deriveReferralStatus(ultimaIntervencion);
+
+          return {
+            id: String(row.id),
+            aprendizFichaId: row.aprendizFichaId,
+            aprendizNombre: row.aprendizNombre || 'Aprendiz',
+            aprendizDocumento: row.aprendizDocumento || '',
+            aprendizCorreo: row.aprendizCorreo || '',
+            aprendizTelefono: row.aprendizTelefono || '',
+            fichaCodigo: row.fichaCodigo || '',
+            programaNombre: row.programaNombre || '',
+            instructorNombre: row.creadoPorNombre || row.instructorNombre || 'Instructor',
+            instructorCorreo: row.instructorCorreo || '',
+            instructorRol: row.creadoPorRol || row.instructorRol || '',
+            fechaRemision: row.fechaEnvioMensaje || (row.fecha ? row.fecha.toISOString().split('T')[0] : ''),
+            nivelRiesgo: row.nivelRiesgo || '',
+            evidenciasPendientes: row.evidenciasPendientes || 0,
+            diasSinAcceso: row.diasSinAcceso || 0,
+            estadoRemision,
+            observacion: row.observacion || row.detalles || '',
+            asunto: row.asunto || 'Remisión a Bienestar',
+            ultimaActuacion: ultimaIntervencion?.observacion || row.proximaAccion || 'Pendiente de atención por Bienestar',
+            historialCompartido,
+            historial: historialCompartido
+          };
+        }));
+
+        return res.json({ success: true, remisiones: sortRemisiones(remisiones) });
+      } catch (dbErr: any) {
+        console.warn('Postgres fetch remisiones-bienestar fallback (memoryDb used):', dbErr.message);
+
+        const referralLogs = memoryDb.seguimientosHistorico
+          .filter((log: any) => log.tipoSeguimiento === 'Remisión a Bienestar')
+          .sort((a: any, b: any) => b.fecha.getTime() - a.fecha.getTime());
+
+        const remisiones = referralLogs.map((log: any) => {
+          const student = memoryDb.aprendicesFichas.find((ap: any) => ap.id === log.aprendizFichaId);
+          const ficha = student ? memoryDb.fichas.find((f: any) => f.id === student.fichaId) : null;
+          const programa = ficha ? memoryDb.programasFormacion.find((p: any) => p.id === ficha.programaId) : null;
+          const inst = memoryDb.instructores.find((i: any) => i.id === log.instructorId);
+          const learnerHistory = memoryDb.seguimientosHistorico
+            .filter((hist: any) => hist.aprendizFichaId === log.aprendizFichaId)
+            .sort((a: any, b: any) => b.fecha.getTime() - a.fecha.getTime());
+          const historialCompartido = learnerHistory.map((hist: any) => ({
+            id: String(hist.id),
+            fecha: hist.fecha ? hist.fecha.toISOString().split('T')[0] : '',
+            tipoSeguimiento: hist.tipoSeguimiento,
+            medioComunicacion: hist.medioComunicacion,
+            observacion: hist.observacion || hist.detalles,
+            estadoNuevo: hist.estadoNuevo,
+            creadoPorNombre: hist.creadoPorNombre,
+            creadoPorRol: hist.creadoPorRol,
+            origenRegistro: hist.origenRegistro,
+            areaResponsable: getLogArea(hist)
+          }));
+          const ultimaIntervencion = historialCompartido.find((hist: any) => isBienestarIntervention(hist));
+          const estadoRemision = deriveReferralStatus(ultimaIntervencion);
+
+          return {
+            id: String(log.id),
+            aprendizFichaId: log.aprendizFichaId,
+            aprendizNombre: student?.nombre || 'Aprendiz',
+            aprendizDocumento: student?.documento || '',
+            aprendizCorreo: student?.correo || '',
+            aprendizTelefono: student?.telefono || '',
+            fichaCodigo: ficha?.codigoFicha || log.codigoFicha || '',
+            programaNombre: programa?.nombre || '',
+            instructorNombre: log.creadoPorNombre || inst?.nombre || 'Instructor',
+            instructorCorreo: inst?.correo || '',
+            instructorRol: log.creadoPorRol || inst?.rol || '',
+            fechaRemision: log.fechaEnvioMensaje || (log.fecha ? log.fecha.toISOString().split('T')[0] : ''),
+            nivelRiesgo: student?.nivelRiesgo || '',
+            evidenciasPendientes: student?.evidenciasPendientes || log.evidenciasPendientes || 0,
+            diasSinAcceso: student?.diasSinAcceso || log.diasSinAcceso || 0,
+            estadoRemision,
+            observacion: log.observacion || log.detalles || '',
+            asunto: log.asunto || 'Remisión a Bienestar',
+            ultimaActuacion: ultimaIntervencion?.observacion || log.proximaAccion || 'Pendiente de atención por Bienestar',
+            historialCompartido,
+            historial: historialCompartido
+          };
+        });
+
+        return res.json({ success: true, remisiones: sortRemisiones(remisiones) });
+      }
+    } catch (err: any) {
+      console.error('Error fetching remisiones bienestar:', err);
+      return res.status(500).json({ error: 'Error al recuperar remisiones a Bienestar' });
+    }
+  });
+
+  // 12. Fetch critical alerts escalated to administrative area
   app.get('/api/administrativo/alertas-criticas', requireAuth, async (req: AuthRequest, res) => {
     try {
       const alertsList = [];

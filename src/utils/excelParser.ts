@@ -1,5 +1,5 @@
 import * as XLSX from 'xlsx';
-import { Aprendiz, Fase, Evidencia } from '../types';
+import { Aprendiz, Fase } from '../types';
 
 /**
  * Normalizes text to easily find names or documents despite case/accents.
@@ -11,6 +11,38 @@ function normalizeKey(key: any): string {
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '') // remove accents
     .trim();
+}
+
+const EVIDENCE_CODE_PATTERN = /(GA\d+-[A-Z0-9]+-AA\d+-EV\d+)/i;
+
+function getEvidenceCode(header: string): string | null {
+  const match = String(header || '').match(EVIDENCE_CODE_PATTERN);
+  return match ? match[1].toUpperCase() : null;
+}
+
+function isPhaseTotalHeader(header: string): boolean {
+  const norm = normalizeKey(header);
+  return norm.includes('total fase') || norm.includes('total de la fase') || norm.includes('total de fase');
+}
+
+function getPhaseMarkerIndex(header: string): number | null {
+  const norm = normalizeKey(header);
+  if (!isPhaseTotalHeader(header)) return null;
+  const match = norm.match(/fase\s*(\d+)/);
+  if (!match) return null;
+  const phaseNumber = Number(match[1]);
+  if (!Number.isFinite(phaseNumber) || phaseNumber < 1 || phaseNumber > 4) return null;
+  return phaseNumber - 1;
+}
+
+function getPhaseNameFromEvidenceCode(evidenceCode: string): string {
+  const gaMatch = String(evidenceCode || '').match(/^GA(\d+)/i);
+  const gaNumber = gaMatch ? Number(gaMatch[1]) : NaN;
+  if (gaNumber === 1 || gaNumber === 2) return 'Análisis';
+  if (gaNumber >= 3 && gaNumber <= 5) return 'Planeación';
+  if (gaNumber >= 6 && gaNumber <= 10) return 'Ejecución';
+  if (gaNumber === 11) return 'Evaluación';
+  return '';
 }
 
 /**
@@ -179,6 +211,7 @@ export function getDocumento(row: any): string {
  * Breakdown an evidence column header into details.
  */
 export function desglosarEvidencia(header: string, faseNombre: string) {
+  const evidenceCode = getEvidenceCode(header);
   if (!header) {
     return {
       nombre: '',
@@ -196,24 +229,13 @@ export function desglosarEvidencia(header: string, faseNombre: string) {
     tipo = 'Foro';
   }
 
-  // Extract code: finding pattern GA\d+-\d+-AA\d+-EV\d+ or similar
-  const codeMatch = header.match(/(GA\d+-[A-Za-z0-9_-]+)/i);
-  let codigo = '';
+  let codigo = evidenceCode || '';
   let actividadProyecto = 'Sin Actividad';
 
-  if (codeMatch) {
-    codigo = codeMatch[1].toUpperCase();
+  if (evidenceCode) {
     const actMatch = codigo.match(/^(GA\d+)/i);
     if (actMatch) {
       actividadProyecto = actMatch[1].toUpperCase();
-    }
-  } else {
-    const gaMatch = header.match(/(GA\d+)/i);
-    if (gaMatch) {
-      actividadProyecto = gaMatch[1].toUpperCase();
-      codigo = header;
-    } else {
-      codigo = header;
     }
   }
 
@@ -221,7 +243,7 @@ export function desglosarEvidencia(header: string, faseNombre: string) {
     nombre: header,
     codigo,
     actividadProyecto,
-    fase: faseNombre,
+    fase: getPhaseNameFromEvidenceCode(codigo) || faseNombre,
     tipo,
   };
 }
@@ -344,8 +366,14 @@ export async function leerArchivoExcel(file: File): Promise<{ headers: string[];
  * Parses headers automatically grouping columns into Phases as per rules.
  */
 export function detectarFases(headers: string[]): Fase[] {
-  const phases: Fase[] = [];
-  let currentEvidences: Evidencia[] = [];
+  const phaseBuckets: Fase[] = ['Análisis', 'Planeación', 'Ejecución', 'Evaluación'].map((name, index) => ({
+    id: `fase-${index + 1}-${normalizeKey(name).replace(/\s+/g, '-')}`,
+    nombre: name,
+    evidencias: [],
+    selected: true
+  }));
+  const seenCodes = new Set<string>();
+  let currentPhaseIndex = 0;
   
   const isMetaHeader = (header: string): boolean => {
     const norm = normalizeKey(header);
@@ -376,49 +404,67 @@ export function detectarFases(headers: string[]): Fase[] {
     );
   };
 
-  const isPhaseMarker = (header: string): boolean => {
-    const norm = normalizeKey(header);
-    return norm.includes('total fase') || norm.includes('total de la fase') || norm.includes('total de fase');
-  };
-
   for (const header of headers) {
-    if (isMetaHeader(header)) {
+    const markerIndex = getPhaseMarkerIndex(header);
+    if (markerIndex !== null) {
+      currentPhaseIndex = Math.min(markerIndex + 1, phaseBuckets.length - 1);
       continue;
     }
-    
-    if (isPhaseMarker(header)) {
-      // Close current phase
-      // Clean up the name for header selection: e.g. "Total Fase 1: Inducción" -> "Fase 1: Inducción"
-      const cleanedName = header.replace(/^total\s+/i, '').trim();
-      const phaseId = header; // keep original header as key ID for total col, or just header
-      
-      phases.push({
-        id: phaseId,
-        nombre: cleanedName || `Fase ${phases.length + 1}`,
-        evidencias: [...currentEvidences],
-        selected: true
-      });
-      currentEvidences = [];
-    } else {
-      // Regular evidence
-      currentEvidences.push({
-        nombre: header,
-        selected: true
-      });
-    }
-  }
-  
-  // Leftover evidences go to a final phase
-  if (currentEvidences.length > 0) {
-    phases.push({
-      id: 'Fase de Evidencias Adicionales',
-      nombre: 'Fase de Seguimiento / Adicional',
-      evidencias: currentEvidences,
+
+    if (isMetaHeader(header)) continue;
+
+    const evidenceCode = getEvidenceCode(header);
+    if (!evidenceCode || seenCodes.has(evidenceCode)) continue;
+
+    const phaseFromGa = getPhaseNameFromEvidenceCode(evidenceCode);
+    const phaseIndexFromGa = phaseBuckets.findIndex(phase => phase.nombre === phaseFromGa);
+    const targetPhase = phaseIndexFromGa >= 0 ? phaseBuckets[phaseIndexFromGa] : phaseBuckets[currentPhaseIndex];
+
+    seenCodes.add(evidenceCode);
+    targetPhase.evidencias.push({
+      nombre: header,
       selected: true
     });
   }
   
-  return phases;
+  return phaseBuckets.filter(phase => phase.evidencias.length > 0);
+}
+
+export function construirFasesDesdeEvidencias(aprendices: Aprendiz[]): Fase[] {
+  const phaseBuckets: Fase[] = ['Análisis', 'Planeación', 'Ejecución', 'Evaluación'].map((name, index) => ({
+    id: `fase-${index + 1}-${normalizeKey(name).replace(/\s+/g, '-')}`,
+    nombre: name,
+    evidencias: [],
+    selected: true
+  }));
+  const fallbackPhase: Fase = {
+    id: 'fase-sin-clasificar',
+    nombre: 'Sin fase',
+    evidencias: [],
+    selected: true
+  };
+  const seenCodes = new Set<string>();
+
+  (aprendices || []).forEach(aprendiz => {
+    Object.entries(aprendiz?.evidencias || {}).forEach(([header, value]) => {
+      const evidenceCode = getEvidenceCode(header);
+      if (!evidenceCode || seenCodes.has(evidenceCode)) return;
+
+      const detail = typeof value === 'object' && value !== null ? value as any : {};
+      const phaseName = getPhaseNameFromEvidenceCode(evidenceCode) || String(detail.fase || '').trim();
+      const phaseIndex = ['Análisis', 'Planeación', 'Ejecución', 'Evaluación']
+        .findIndex(name => normalizeKey(name) === normalizeKey(phaseName));
+      const targetPhase = phaseIndex >= 0 ? phaseBuckets[phaseIndex] : fallbackPhase;
+
+      seenCodes.add(evidenceCode);
+      targetPhase.evidencias.push({
+        nombre: header,
+        selected: true
+      });
+    });
+  });
+
+  return [...phaseBuckets, fallbackPhase].filter(phase => phase.evidencias.length > 0);
 }
 
 /**
@@ -452,8 +498,10 @@ export function normalizarAprendices(
               val = 'A';
             } else if (rawVal === 'D' || rawVal === 'DESAPROBADO' || rawVal === 'DESAPROBADA' || rawVal === 'REPROBADO' || rawVal === 'REPROBADA') {
               val = 'D';
-            } else {
+            } else if (rawVal === '-') {
               val = '-';
+            } else {
+              val = '';
             }
           }
           
@@ -634,6 +682,7 @@ export function detectExcelReportType(rows2D: any[][]): 'aprendices' | 'califica
       // Calificaciones indicators
       if (
         valLower.includes('evidencia:') ||
+        EVIDENCE_CODE_PATTERN.test(val) ||
         valLower.includes('foro:') ||
         valLower.includes('prueba de conocimiento:') ||
         valClean.includes('total de la fase') ||
