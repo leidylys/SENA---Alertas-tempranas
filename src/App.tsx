@@ -483,7 +483,7 @@ export default function App() {
           instructor: instructorProfile?.nombre || 'Instructor Responsable',
           ultimoSeguimiento: data.ficha.ultimoSeguimiento,
           fechaInicio: data.ficha.fechaInicio,
-          fechaFin: data.ficha.fechaFin,
+          fechaFin: data.ficha.fechaFin
         };
         
         const realPhases = construirFasesDesdeEvidencias(data.aprendices || []);
@@ -825,17 +825,6 @@ export default function App() {
                 </p>
               </div>
 
-              {/* Upload cohort button trigger */}
-              {!isUserAdmin && (
-                <button
-                  onClick={() => setCurrentView('upload_new')}
-                  className="z-10 shrink-0 bg-white hover:bg-emerald-50 text-neutral-850 font-extrabold text-xs py-3 px-5 rounded-xl border border-white/30 transition-all flex items-center justify-center gap-2 shadow-md"
-                  id="create-new-ficha-trigger-btn"
-                >
-                  <Plus className="w-4 h-4 text-[#39A900]" />
-                  <span>Subir nueva ficha</span>
-                </button>
-              )}
             </div>
 
             {isUserAdmin && (

@@ -1,6 +1,6 @@
 import jsPDF from 'jspdf';
 import 'jspdf-autotable';
-import { Aprendiz, FichaInfo } from '../types';
+import { Aprendiz, Fase, FichaInfo } from '../types';
 
 /**
  * Draws the vector SENA Logo on the top-left of the PDF document.
@@ -215,6 +215,325 @@ export function generarPdfSeguimiento(
   return doc;
 }
 
+function metric(ap: Aprendiz, key: keyof Aprendiz, fallback = 0): number {
+  const value = ap[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
+function getEvidenciasNoEntregadas(ap: Aprendiz): number {
+  return Math.max(metric(ap, 'totalPendientes') - metric(ap, 'totalNoAprobadas'), 0);
+}
+
+function getEvidenciasEnviadas(ap: Aprendiz): number {
+  return metric(ap, 'totalAprobadas') + metric(ap, 'totalNoAprobadas');
+}
+
+function getSeguimientosCount(ap: Aprendiz): number {
+  return Array.isArray(ap.historialIntervenciones) ? ap.historialIntervenciones.length : 0;
+}
+
+function hasRemisionBienestar(ap: Aprendiz): boolean {
+  return (ap.historialIntervenciones || []).some((hist: any) => {
+    const text = [
+      hist?.tipoSeguimiento,
+      hist?.medioComunicacion,
+      hist?.observacion,
+      hist?.detalle,
+      hist?.detalles,
+      hist?.origenRegistro
+    ].join(' ').toLowerCase();
+    return text.includes('remisión a bienestar') || text.includes('remision a bienestar') || text.includes('bienestar');
+  });
+}
+
+function getUltimaRemisionBienestar(ap: Aprendiz): any | null {
+  return (ap.historialIntervenciones || []).find((hist: any) => {
+    const text = [
+      hist?.tipoSeguimiento,
+      hist?.medioComunicacion,
+      hist?.observacion,
+      hist?.detalle,
+      hist?.detalles,
+      hist?.origenRegistro
+    ].join(' ').toLowerCase();
+    return text.includes('remisión a bienestar') || text.includes('remision a bienestar') || text.includes('bienestar');
+  }) || null;
+}
+
+function getAlcanceAnalisis(fases?: Fase[]): string {
+  if (!Array.isArray(fases) || fases.length === 0) {
+    return 'Todas las evidencias cargadas o alcance actualmente disponible.';
+  }
+
+  const selectedFases = fases.filter(fase => fase?.selected);
+  const selectedEvidencias = selectedFases.flatMap(fase => (fase.evidencias || []).filter(ev => ev.selected));
+  const totalEvidencias = fases.flatMap(fase => fase.evidencias || []).length;
+
+  if (selectedEvidencias.length === 0) {
+    return 'Sin evidencias seleccionadas para el analisis actual.';
+  }
+  if (selectedEvidencias.length === totalEvidencias) {
+    return `Todas las evidencias cargadas (${selectedEvidencias.length}).`;
+  }
+  if (selectedFases.length === 1) {
+    return `Fase seleccionada: ${selectedFases[0].nombre} (${selectedEvidencias.length} evidencia(s)).`;
+  }
+
+  const apGaMatches = selectedEvidencias
+    .map(ev => ev.nombre.match(/\b(?:AP|GA)\s*0?(\d{1,2})\b/i)?.[0]?.toUpperCase().replace(/\s+/g, ''))
+    .filter(Boolean);
+  const uniqueApGa = Array.from(new Set(apGaMatches));
+  if (uniqueApGa.length === 1) {
+    return `AP/GA seleccionado: ${uniqueApGa[0]} (${selectedEvidencias.length} evidencia(s)).`;
+  }
+
+  return `Evidencias seleccionadas manualmente (${selectedEvidencias.length} de ${totalEvidencias}).`;
+}
+
+function getOrdenSeguimiento(ap: Aprendiz): number {
+  if (ap.estadoSeguimiento === 'Posible deserción') return 0;
+  if (ap.estadoSeguimiento === 'Riesgo alto' || ap.nivelRiesgo === 'Alto') return 1;
+  if (ap.estadoSeguimiento === 'Riesgo medio' || ap.nivelRiesgo === 'Medio') return 2;
+  return 3;
+}
+
+function addFooter(doc: jsPDF, generatedAt: Date) {
+  const pageCount = doc.getNumberOfPages();
+  for (let page = 1; page <= pageCount; page++) {
+    doc.setPage(page);
+    doc.setDrawColor(220, 220, 220);
+    doc.line(12, 202, 285, 202);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7.5);
+    doc.setTextColor(100, 100, 100);
+    doc.text(`Generado: ${generatedAt.toLocaleString()} | Sistema de Alertas Tempranas SENA`, 12, 207);
+    doc.text(`Pagina ${page} de ${pageCount}`, 285, 207, { align: 'right' });
+  }
+}
+
+export function generarPdfConsolidadoFicha(
+  aprendices: Aprendiz[],
+  fichaInfo: FichaInfo,
+  options: { fases?: Fase[]; generadoPor?: string } = {}
+): jsPDF {
+  const doc = new jsPDF('l', 'mm', 'a4');
+  const generatedAt = new Date();
+  const lista = Array.isArray(aprendices) ? aprendices.filter(Boolean) : [];
+  const sorted = [...lista].sort((a, b) => {
+    const order = getOrdenSeguimiento(a) - getOrdenSeguimiento(b);
+    if (order !== 0) return order;
+    return (b.diasSinAcceso || 0) - (a.diasSinAcceso || 0) || metric(b, 'totalPendientes') - metric(a, 'totalPendientes');
+  });
+
+  const totalAprendices = lista.length;
+  const posibleDesercion = lista.filter(ap => ap.estadoSeguimiento === 'Posible deserción').length;
+  const riesgoAlto = lista.filter(ap => ap.estadoSeguimiento !== 'Posible deserción' && (ap.estadoSeguimiento === 'Riesgo alto' || ap.nivelRiesgo === 'Alto')).length;
+  const riesgoMedio = lista.filter(ap => ap.estadoSeguimiento !== 'Posible deserción' && (ap.estadoSeguimiento === 'Riesgo medio' || ap.nivelRiesgo === 'Medio')).length;
+  const riesgoBajo = lista.filter(ap => ap.estadoSeguimiento !== 'Posible deserción' && (ap.estadoSeguimiento === 'Riesgo bajo' || ap.nivelRiesgo === 'Bajo')).length;
+  const accesoCritico = lista.filter(ap => ap.estadoAcceso === 'Acceso crítico' || ((ap.diasSinAcceso || 0) > 15)).length;
+  const totalEvidencias = lista.reduce((sum, ap) => sum + metric(ap, 'totalEvidencias'), 0);
+  const totalAprobadas = lista.reduce((sum, ap) => sum + metric(ap, 'totalAprobadas'), 0);
+  const totalDesaprobadas = lista.reduce((sum, ap) => sum + metric(ap, 'totalNoAprobadas'), 0);
+  const totalPendientes = lista.reduce((sum, ap) => sum + metric(ap, 'totalPendientes'), 0);
+  const totalNoEntregadas = lista.reduce((sum, ap) => sum + getEvidenciasNoEntregadas(ap), 0);
+  const totalLlamados = lista.reduce((sum, ap) => sum + getSeguimientosCount(ap), 0);
+  const totalRemisiones = lista.filter(hasRemisionBienestar).length;
+
+  drawSenaLogo(doc, 12, 10);
+  doc.setTextColor(0, 120, 50);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(16);
+  doc.text('SERVICIO NACIONAL DE APRENDIZAJE - SENA', 72, 16);
+  doc.setFontSize(11);
+  doc.setTextColor(66, 66, 66);
+  doc.text('Sistema de Alertas Tempranas | Reporte consolidado de seguimiento academico', 72, 22);
+  doc.setDrawColor(57, 169, 0);
+  doc.setLineWidth(1);
+  doc.line(12, 30, 285, 30);
+
+  doc.setFillColor(245, 250, 246);
+  doc.rect(12, 35, 273, 28, 'F');
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(9);
+  doc.setTextColor(0, 120, 50);
+  doc.text('INFORMACION DE LA FICHA', 16, 42);
+  doc.setFont('helvetica', 'normal');
+  doc.setTextColor(35, 35, 35);
+  doc.text(`Programa: ${fichaInfo.programaFormacion || 'No registrado'}`, 16, 48);
+  doc.text(`Ficha: ${fichaInfo.numeroFicha || 'No registrada'} | Nivel: ${fichaInfo.nivel || 'No registrado'}`, 16, 54);
+  doc.text(`Instructor/usuario: ${options.generadoPor || fichaInfo.instructor || 'No registrado'}`, 16, 60);
+  doc.text(`Fecha de generacion: ${generatedAt.toLocaleDateString()} ${generatedAt.toLocaleTimeString()}`, 174, 48);
+  doc.text(`Alcance: ${getAlcanceAnalisis(options.fases)}`, 174, 54, { maxWidth: 105 });
+
+  (doc as any).autoTable({
+    startY: 69,
+    head: [['Indicador', 'Valor', 'Indicador', 'Valor', 'Indicador', 'Valor']],
+    body: [
+      ['Total aprendices', totalAprendices, 'Posible desercion', posibleDesercion, 'Acceso critico', accesoCritico],
+      ['Riesgo alto', riesgoAlto, 'Riesgo medio', riesgoMedio, 'Riesgo bajo', riesgoBajo],
+      ['Evidencias consideradas', totalEvidencias, 'Aprobadas', totalAprobadas, 'Desaprobadas', totalDesaprobadas],
+      ['No entregadas', totalNoEntregadas, 'Pendientes', totalPendientes, 'Llamados/comunicaciones', totalLlamados],
+      ['Remisiones a Bienestar', totalRemisiones, '', '', '', '']
+    ],
+    theme: 'grid',
+    styles: { fontSize: 8, cellPadding: 2 },
+    headStyles: { fillColor: [0, 120, 50], textColor: [255, 255, 255], fontStyle: 'bold' },
+    columnStyles: {
+      0: { fontStyle: 'bold', textColor: [0, 120, 50] },
+      2: { fontStyle: 'bold', textColor: [0, 120, 50] },
+      4: { fontStyle: 'bold', textColor: [0, 120, 50] }
+    }
+  });
+
+  let y = (doc as any).lastAutoTable.finalY + 8;
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(10);
+  doc.setTextColor(0, 120, 50);
+  doc.text('TABLA CONSOLIDADA DE APRENDICES', 12, y);
+
+  const tableRows = sorted.map(ap => [
+    ap.nombre || 'Sin nombre',
+    ap.documento || 'N/D',
+    ap.correo || 'Sin correo',
+    ap.ultimoAcceso || 'Sin dato',
+    ap.diasSinAcceso ?? 'N/D',
+    getEvidenciasEnviadas(ap),
+    metric(ap, 'totalAprobadas'),
+    metric(ap, 'totalNoAprobadas'),
+    getEvidenciasNoEntregadas(ap),
+    metric(ap, 'totalPendientes'),
+    metric(ap, 'totalEvidencias'),
+    ap.estadoSeguimiento || ap.nivelRiesgo || 'Sin dato',
+    ap.accionRecomendada || 'Seguimiento de rutina',
+    getSeguimientosCount(ap),
+    hasRemisionBienestar(ap) ? 'Si' : 'No'
+  ]);
+
+  (doc as any).autoTable({
+    startY: y + 4,
+    head: [['Nombre', 'Documento', 'Correo', 'Ultimo ingreso', 'Dias', 'Env.', 'Aprob.', 'Desap.', 'No ent.', 'Pend.', 'Total', 'Clasificacion', 'Accion recomendada', 'Llam.', 'Bienestar']],
+    body: tableRows,
+    theme: 'striped',
+    styles: { fontSize: 6.6, cellPadding: 1.4, overflow: 'linebreak', valign: 'middle' },
+    headStyles: { fillColor: [0, 120, 50], textColor: [255, 255, 255], fontStyle: 'bold', fontSize: 6.8 },
+    columnStyles: {
+      0: { cellWidth: 29 },
+      1: { cellWidth: 18 },
+      2: { cellWidth: 32 },
+      3: { cellWidth: 22 },
+      4: { cellWidth: 10, halign: 'center' },
+      5: { cellWidth: 10, halign: 'center' },
+      6: { cellWidth: 11, halign: 'center' },
+      7: { cellWidth: 11, halign: 'center' },
+      8: { cellWidth: 11, halign: 'center' },
+      9: { cellWidth: 11, halign: 'center' },
+      10: { cellWidth: 11, halign: 'center' },
+      11: { cellWidth: 24, fontStyle: 'bold' },
+      12: { cellWidth: 34 },
+      13: { cellWidth: 10, halign: 'center' },
+      14: { cellWidth: 12, halign: 'center' }
+    },
+    didParseCell: (data: any) => {
+      if (data.section === 'body' && data.column.index === 11) {
+        const value = String(data.cell.raw || '').toLowerCase();
+        if (value.includes('deserc')) data.cell.styles.textColor = [190, 18, 60];
+        else if (value.includes('alto')) data.cell.styles.textColor = [220, 38, 38];
+        else if (value.includes('medio')) data.cell.styles.textColor = [217, 119, 6];
+        else data.cell.styles.textColor = [5, 150, 105];
+      }
+    }
+  });
+
+  y = (doc as any).lastAutoTable.finalY + 8;
+  if (y > 160) {
+    doc.addPage();
+    y = 18;
+  }
+  const criticos = sorted.filter(ap =>
+    ap.estadoSeguimiento === 'Posible deserción' ||
+    ap.estadoSeguimiento === 'Riesgo alto' ||
+    ap.estadoAcceso === 'Acceso crítico' ||
+    ((ap.diasSinAcceso || 0) > 15) ||
+    hasRemisionBienestar(ap)
+  );
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(10);
+  doc.setTextColor(190, 18, 60);
+  doc.text('APRENDICES CRITICOS PRIORIZADOS', 12, y);
+  (doc as any).autoTable({
+    startY: y + 4,
+    head: [['Aprendiz', 'Documento', 'Correo', 'Dias sin acceso', 'Pendientes', 'Accion recomendada']],
+    body: criticos.length > 0
+      ? criticos.map(ap => [ap.nombre, ap.documento, ap.correo || 'Sin correo', ap.diasSinAcceso ?? 'N/D', metric(ap, 'totalPendientes'), ap.accionRecomendada || 'Intervenir'])
+      : [['Sin aprendices criticos con el alcance actual', '', '', '', '', '']],
+    theme: 'grid',
+    styles: { fontSize: 7, cellPadding: 1.6, overflow: 'linebreak' },
+    headStyles: { fillColor: [190, 18, 60], textColor: [255, 255, 255], fontStyle: 'bold' }
+  });
+
+  y = (doc as any).lastAutoTable.finalY + 8;
+  if (y > 165) {
+    doc.addPage();
+    y = 18;
+  }
+  const remisiones = sorted
+    .map(ap => ({ ap, remision: getUltimaRemisionBienestar(ap) }))
+    .filter(item => item.remision);
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(10);
+  doc.setTextColor(88, 28, 135);
+  doc.text('REMISIONES A BIENESTAR', 12, y);
+  (doc as any).autoTable({
+    startY: y + 4,
+    head: [['Aprendiz', 'Documento', 'Fecha remision', 'Estado', 'Ultima intervencion', 'Respuesta/actualizacion']],
+    body: remisiones.length > 0
+      ? remisiones.map(({ ap, remision }) => {
+          const text = [remision?.tipoSeguimiento, remision?.medioComunicacion, remision?.observacion, remision?.detalle, remision?.detalles].join(' ');
+          const hasResponse = /respuesta|actualizaci[oó]n/i.test(text);
+          return [
+            ap.nombre,
+            ap.documento,
+            remision?.fecha || remision?.fechaRegistro || 'Sin fecha',
+            ap.estadoIntervencion || 'En seguimiento',
+            remision?.tipoSeguimiento || remision?.medioComunicacion || 'Remision registrada',
+            hasResponse ? 'Si' : 'No'
+          ];
+        })
+      : [['No se registran remisiones a Bienestar para esta ficha.', '', '', '', '', '']],
+    theme: 'grid',
+    styles: { fontSize: 7, cellPadding: 1.6, overflow: 'linebreak' },
+    headStyles: { fillColor: [88, 28, 135], textColor: [255, 255, 255], fontStyle: 'bold' }
+  });
+
+  y = (doc as any).lastAutoTable.finalY + 8;
+  if (y > 178) {
+    doc.addPage();
+    y = 18;
+  }
+  const observaciones = [
+    `La ficha presenta ${posibleDesercion} aprendiz(es) en posible desercion.`,
+    accesoCritico > 0 ? `Se recomienda priorizar contacto con ${accesoCritico} aprendiz(es) con inasistencia critica.` : 'No se identifican aprendices con inasistencia critica en el alcance actual.',
+    totalRemisiones > 0 ? 'Se recomienda seguimiento a las remisiones pendientes por atender o en curso.' : 'No se registran remisiones a Bienestar para esta ficha.',
+    totalPendientes > 0 ? 'Se recomienda revisar aprendices con evidencias pendientes y bajo acceso.' : 'No se registran evidencias pendientes en el alcance actual.'
+  ];
+
+  doc.setFillColor(245, 250, 246);
+  doc.rect(12, y, 273, 24, 'F');
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(9);
+  doc.setTextColor(0, 120, 50);
+  doc.text('OBSERVACIONES GENERALES AUTOMATICAS', 16, y + 6);
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8);
+  doc.setTextColor(45, 45, 45);
+  doc.text(doc.splitTextToSize(observaciones.join(' '), 264), 16, y + 12);
+
+  addFooter(doc, generatedAt);
+  return doc;
+}
+
 /**
  * Generates an elegant single sheet style report PDF for one specific student.
  */
@@ -255,8 +574,8 @@ export function generarPdfIndividual(aprendiz: Aprendiz, fichaInfo: FichaInfo): 
   doc.text(`Correo institucional: ${aprendiz.correo}`, 18, 57);
 
   doc.text(`Ficha Programa: ${fichaInfo.numeroFicha}`, 120, 47);
-  doc.text(`Nivel de Riesgo: ${aprendiz.nivelRiesgo.toUpperCase()}`, 120, 52);
-  doc.text(`Puntaje Riesgo: ${aprendiz.puntajeRiesgo} puntos`, 120, 57);
+  doc.text(`Clasificacion: ${(aprendiz.estadoSeguimiento || aprendiz.nivelRiesgo || 'Sin dato').toString()}`, 120, 52);
+  doc.text(`Accion: ${aprendiz.accionRecomendada || 'Seguimiento de rutina'}`, 120, 57);
 
   // Section 2: Evidences Details
   doc.setTextColor(0, 120, 50);

@@ -215,9 +215,11 @@ export default function PhaseSelector({
             <p>Pendientes = D + -</p>
           </div>
           <div className="text-[9.5px] italic text-emerald-700/80 leading-snug border-t border-emerald-100/60 pt-1">
+            Posible deserción: aprendiz sin evidencias registradas, sin evidencias aprobadas, desaprobadas o pendientes, y con más de 15 días sin acceso a la plataforma.<br />
             Riesgo Alto: 10 o más evidencias pendientes y más de 15 días sin ingreso.<br />
             Riesgo Medio: 5 a 9 evidencias pendientes y más de 15 días sin ingreso.<br />
-            Riesgo Bajo: menos de 5 evidencias pendientes o sin condición crítica de acceso.
+            Riesgo Bajo: menos de 5 evidencias pendientes o sin condición crítica de acceso.<br />
+            Prioridad: Posible deserción, Riesgo alto, Riesgo medio, Riesgo bajo.
           </div>
         </div>
 

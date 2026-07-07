@@ -1469,7 +1469,7 @@ ${fichaInfo.instructor || 'Tutora AVA'}`;
                                 <div>
                                   <span className="text-slate-400 block font-medium text-[10px]">Acción recomendada</span>
                                   <span className="font-black text-emerald-700 text-[11px] block">
-                                    {ap.estadoSeguimiento === 'Posible deserción' ? 'Remitir a Bienestar al Aprendiz' : (ap.accionRecomendada || 'No requiere acción')}
+                                    {ap.estadoSeguimiento === 'Posible deserción' ? (ap.accionRecomendada || 'Intervenir y validar posible deserción') : (ap.accionRecomendada || 'No requiere acción')}
                                   </span>
                                 </div>
                               </div>

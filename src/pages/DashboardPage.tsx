@@ -10,12 +10,12 @@ import DashboardCards from '../components/DashboardCards';
 import PhaseSelector from '../components/PhaseSelector';
 import AlertTable from '../components/AlertTable';
 import StrategyModal from '../components/StrategyModal';
-import ReportModal from '../components/ReportModal';
 import { useAlertasStore } from '../hooks/useAlertasStore';
 import { auth } from '../lib/firebase.ts';
 import { saveIndividualIntervention, saveBulkIntervention, syncLearnersToDb, saveBitacoraSeguimiento, fetchFichaDetails } from '../lib/api.ts';
 import { leerArchivoExcel, leerArchivoExcel2D, detectarFases, normalizarAprendices, combinarDatos, detectExcelReportType, parseReporteAprendicesExcel } from '../utils/excelParser';
 import { procesarTodosLosAprendices } from '../utils/riskCalculator';
+import { generarPdfConsolidadoFicha } from '../services/pdfGenerator';
 
 interface DashboardPageProps {
   aprendices: Aprendiz[];
@@ -77,7 +77,7 @@ export default function DashboardPage({
   };
 
   // Modals state
-  const [isReportOpen, setIsReportOpen] = useState(false);
+  const [isGeneratingFichaPdf, setIsGeneratingFichaPdf] = useState(false);
   const [isStrategyOpen, setIsStrategyOpen] = useState(false);
   const [isSavingIntervention, setIsSavingIntervention] = useState(false);
 
@@ -834,6 +834,29 @@ ${emailCuerpo}`;
   const countBajo = store.aprendices.filter(a => a.estadoSeguimiento === 'Riesgo bajo').length;
   const countSinDato = store.aprendices.filter(a => a.estadoSeguimiento === 'Sin dato suficiente').length;
 
+  const handleGenerarPdfFicha = () => {
+    if (!store.aprendices || store.aprendices.length === 0) {
+      alert('No hay aprendices cargados para generar el reporte de ficha.');
+      return;
+    }
+
+    setIsGeneratingFichaPdf(true);
+    try {
+      const doc = generarPdfConsolidadoFicha(store.aprendices, fichaInfo, {
+        fases,
+        generadoPor: fichaInfo.instructor
+      });
+      const fecha = new Date().toISOString().split('T')[0];
+      const ficha = (fichaInfo.numeroFicha || 'SinFicha').replace(/[^\w-]+/g, '_');
+      doc.save(`Reporte_Ficha_${ficha}_${fecha}.pdf`);
+    } catch (error) {
+      console.error('Error generando PDF consolidado de ficha:', error);
+      alert('No fue posible generar el PDF consolidado de la ficha.');
+    } finally {
+      setIsGeneratingFichaPdf(false);
+    }
+  };
+
   // Modals Triggers
   const triggerIndividualIntervention = (ap: Aprendiz) => {
     setStrategyMassTarget(null);
@@ -991,7 +1014,6 @@ ${emailCuerpo}`;
           creadoPorNombre: seguimiento.creadoPorNombre || seguimiento.instructor,
           usuarioResponsableNombre: seguimiento.usuarioResponsableNombre || seguimiento.instructor,
           numeroLlamado: seguimiento.numeroLlamado,
-          parentSeguimientoId: seguimiento.parentSeguimientoId ?? datosSeguimiento.parentSeguimientoId
         };
 
         store.aplicarIntervencionIndividual(
@@ -1043,12 +1065,13 @@ ${emailCuerpo}`;
           {/* Open Export Modal */}
           <button
             type="button"
-            onClick={() => setIsReportOpen(true)}
-            className="flex-1 sm:flex-initial bg-white/10 hover:bg-white/20 text-white text-xs font-bold py-2.5 px-3 rounded transition-colors flex items-center justify-center gap-1.5 border border-white/20"
+            onClick={handleGenerarPdfFicha}
+            disabled={isGeneratingFichaPdf}
+            className="flex-1 sm:flex-initial bg-white/10 hover:bg-white/20 disabled:bg-white/5 disabled:cursor-not-allowed text-white text-xs font-bold py-2.5 px-3 rounded transition-colors flex items-center justify-center gap-1.5 border border-white/20"
             id="open-report-options-btn"
           >
-            <FileText className="w-4 h-4" />
-            <span>Generar PDF</span>
+            {isGeneratingFichaPdf ? <Loader2 className="w-4 h-4 animate-spin" /> : <FileText className="w-4 h-4" />}
+            <span>{isGeneratingFichaPdf ? 'Generando...' : 'Generar PDF'}</span>
           </button>
 
           {isAdmin ? (
@@ -1624,14 +1647,6 @@ ${emailCuerpo}`;
         aprendicesMasivos={strategyMassTarget}
         instructorNombreActual={fichaInfo.instructor}
         onGuardar={handleGuardarIntervencion}
-      />
-
-      {/* 2. Download formal PDF/Excel Options Modal */}
-      <ReportModal
-        isOpen={isReportOpen}
-        onClose={() => setIsReportOpen(false)}
-        aprendices={store.aprendices}
-        fichaInfo={fichaInfo}
       />
 
       {/* 3. Enviar Llamado de Atención Modal */}
