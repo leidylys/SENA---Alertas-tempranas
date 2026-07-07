@@ -38,6 +38,7 @@ interface AlertTableProps {
 
 function isAcademicCall(hist: { tipoSeguimiento?: string | null; numeroLlamado?: number | null }): boolean {
   if (!hist) return false;
+  if (isResponseUpdateLog(hist)) return false;
   const isTypeMail = hist.tipoSeguimiento === 'Correo de llamado a ponerse al día';
   const hasLlamadoInType = typeof hist.tipoSeguimiento === 'string' && hist.tipoSeguimiento.toLowerCase().includes('llamado');
   const hasValidNum = typeof hist.numeroLlamado === 'number' && hist.numeroLlamado > 0;
@@ -57,6 +58,74 @@ function getSeguimientoArea(hist: any): string {
   if (text.includes('bienestar') || text.includes('administrativo') || text.includes('admin')) return 'Bienestar/Admin';
   if (text.includes('instructor') || text.includes('llamado') || text.includes('correo de llamado')) return 'Instructor';
   return 'Usuario del sistema';
+}
+
+function isResponseUpdateLog(hist: any): boolean {
+  if (!hist) return false;
+  const text = [
+    hist?.tipoSeguimiento,
+    hist?.medioComunicacion,
+    hist?.asunto,
+    hist?.observacion,
+    hist?.observaciones,
+    hist?.detalle,
+    hist?.detalles,
+    hist?.respuestaAprendiz
+  ].join(' ').toLowerCase();
+  return (
+    text.includes('respuesta aprendiz - bienestar') ||
+    text.includes('respuesta / actualización') ||
+    text.includes('respuesta / actualizacion') ||
+    text.includes('respuesta registrada') ||
+    text.includes('respondiendo') ||
+    text.includes('respuesta a:')
+  );
+}
+
+function getSeguimientoLogId(hist: any, index = 0): string {
+  return String(hist?.id || hist?.seguimientoId || hist?.fechaRegistro || hist?.fecha || `seguimiento-${index}`);
+}
+
+function getSeguimientoLogLabel(hist: any, index = 0, fallbackLabel = 'Seguimiento'): string {
+  const type = hist?.tipoSeguimiento || hist?.medioComunicacion || fallbackLabel;
+  const date = hist?.fecha || hist?.fechaRegistro || 'Sin fecha';
+  return `${type} · ${date} · ${getSeguimientoLogId(hist, index)}`;
+}
+
+function getNestedResponsesForLog(history: any[], source: any, index = 0, fallbackLabel = 'Seguimiento'): any[] {
+  const sourceId = getSeguimientoLogId(source, index).toLowerCase();
+  const sourceLabel = getSeguimientoLogLabel(source, index, fallbackLabel).toLowerCase();
+  const shortLabel = String(fallbackLabel || source?.tipoSeguimiento || '').toLowerCase();
+  const sourceTime = new Date(source?.fechaRegistro || source?.fecha || source?.createdAt || 0).getTime();
+  const normalizedSourceTime = Number.isFinite(sourceTime) ? sourceTime : 0;
+  const responseLogs = history.filter((candidate) => candidate !== source && isResponseUpdateLog(candidate));
+
+  const explicitMatches = responseLogs.filter((candidate) => {
+    const candidateText = [
+      candidate?.observacion,
+      candidate?.observaciones,
+      candidate?.detalles,
+      candidate?.detalle,
+      candidate?.asunto
+    ].join(' ').toLowerCase();
+    return candidateText.includes(sourceId) || candidateText.includes(sourceLabel) || (!!shortLabel && candidateText.includes(shortLabel));
+  });
+
+  if (explicitMatches.length > 0) return explicitMatches;
+
+  const mainLogs = history.filter((candidate) => !isResponseUpdateLog(candidate));
+  return responseLogs.filter((candidate) => {
+    const candidateTime = new Date(candidate?.fechaRegistro || candidate?.fecha || candidate?.createdAt || 0).getTime();
+    const normalizedCandidateTime = Number.isFinite(candidateTime) ? candidateTime : 0;
+    if (normalizedSourceTime <= 0 || normalizedCandidateTime < normalizedSourceTime) return false;
+    const nextMainBeforeResponse = mainLogs
+      .filter((main) => main !== source)
+      .some((main) => {
+        const mainTime = new Date(main?.fechaRegistro || main?.fecha || main?.createdAt || 0).getTime();
+        return Number.isFinite(mainTime) && mainTime > normalizedSourceTime && mainTime <= normalizedCandidateTime;
+      });
+    return !nextMainBeforeResponse;
+  });
 }
 
 function getOrdinalLlamadoText(num: number): string {
@@ -1604,7 +1673,12 @@ ${fichaInfo.instructor || 'Tutora AVA'}`;
 
                                                   {/* Child Responses nested list */}
                                                   {(() => {
-                                                    const childResponses: any[] = [];
+                                                    const childResponses = getNestedResponsesForLog(
+                                                      ap.historialIntervenciones || [],
+                                                      ll,
+                                                      ap.historialIntervenciones.indexOf(ll),
+                                                      label
+                                                    );
                                                     
                                                     return (
                                                       <div className="space-y-2 mt-3 pt-2.5 border-t border-slate-200/50">
@@ -1691,7 +1765,7 @@ ${fichaInfo.instructor || 'Tutora AVA'}`;
                                   <span className="font-bold text-[9.5px] text-slate-500 uppercase block">E. Intervenciones:</span>
                                   {(() => {
                                     const intervenciones = (ap.historialIntervenciones || [])
-                                      .filter(hist => !isAcademicCall(hist));
+                                      .filter(hist => !isAcademicCall(hist) && !isResponseUpdateLog(hist));
                                     
                                     if (intervenciones.length === 0) {
                                       return <span className="text-slate-400 italic text-[11px] block pl-1">Sin intervenciones académicas registradas</span>;
@@ -1736,7 +1810,12 @@ ${fichaInfo.instructor || 'Tutora AVA'}`;
 
                                             {/* Nested child responses for this intervention */}
                                             {(() => {
-                                              const childResponses: any[] = [];
+                                              const childResponses = getNestedResponsesForLog(
+                                                ap.historialIntervenciones || [],
+                                                int,
+                                                ap.historialIntervenciones.indexOf(int),
+                                                int.tipoSeguimiento || 'Intervención de Apoyo'
+                                              );
                                               
                                               return (
                                                 <div className="space-y-1.5 mt-2 pt-2 border-t border-slate-200/50">

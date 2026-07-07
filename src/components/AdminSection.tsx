@@ -2461,21 +2461,34 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
     const sourceLabel = getBitacoraLogLabel(item, index).toLowerCase();
     const itemTime = new Date(item?.fechaRegistro || item?.fecha || item?.createdAt || 0).getTime();
     const normalizedItemTime = Number.isFinite(itemTime) ? itemTime : 0;
+    const responseLogs = history.filter((candidate: any) => candidate !== item && isBienestarResponseLog(candidate));
 
-    return history.find((candidate: any) => {
-      if (candidate === item || !isBienestarResponseLog(candidate)) return false;
+    const explicitMatch = responseLogs.find((candidate: any) => {
       const candidateText = [
         candidate?.observacion,
         candidate?.detalles,
         candidate?.detalle,
         candidate?.asunto
       ].join(' ').toLowerCase();
-      if (candidateText.includes(sourceId.toLowerCase()) || candidateText.includes(sourceLabel)) {
-        return true;
-      }
+      return candidateText.includes(sourceId.toLowerCase()) || candidateText.includes(sourceLabel);
+    });
+
+    if (explicitMatch) return explicitMatch;
+
+    const mainLogs = history.filter((candidate: any) => !isBienestarResponseLog(candidate));
+    const currentMainIndex = mainLogs.indexOf(item);
+
+    return responseLogs.find((candidate: any) => {
       const candidateTime = new Date(candidate?.fechaRegistro || candidate?.fecha || candidate?.createdAt || 0).getTime();
       const normalizedCandidateTime = Number.isFinite(candidateTime) ? candidateTime : 0;
-      return normalizedItemTime > 0 && normalizedCandidateTime >= normalizedItemTime;
+      if (normalizedItemTime <= 0 || normalizedCandidateTime < normalizedItemTime) return false;
+      const previousMain = mainLogs
+        .filter((main: any) => main !== item)
+        .find((main: any) => {
+          const mainTime = new Date(main?.fechaRegistro || main?.fecha || main?.createdAt || 0).getTime();
+          return Number.isFinite(mainTime) && mainTime > normalizedItemTime && mainTime <= normalizedCandidateTime;
+        });
+      return currentMainIndex >= 0 && !previousMain;
     }) || null;
   };
 
@@ -3218,22 +3231,20 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
                   <div className="p-3 space-y-2 max-h-80 overflow-y-auto">
                     {(() => {
                       const history = ((selectedRemision.historialCompartido || selectedRemision.historial || []) as any[]);
-                      if (history.length === 0) {
+                      const mainHistory = history.filter((item: any) => !isBienestarResponseLog(item));
+                      if (mainHistory.length === 0) {
                         return <p className="text-xs text-slate-400 font-semibold">No hay historial asociado.</p>;
                       }
 
-                      return history.map((item: any, index: number) => {
+                      return mainHistory.map((item: any, index: number) => {
                         const area = getAreaResponsable(item);
                         const logId = getBitacoraLogId(item, index);
                         const isExpanded = expandedBienestarLogId === logId;
                         const isOwnBienestarLog = area === 'Bienestar/Admin';
-                        const isResponseLog = isBienestarResponseLog(item);
-                        const responseLog = isOwnBienestarLog && !isResponseLog ? getBienestarResponseForLog(history, item, index) : null;
+                        const responseLog = isOwnBienestarLog ? getBienestarResponseForLog(history, item, index) : null;
                         const readOnlyLabel = area === 'Instructor' || area === 'Instructor que remite'
                           ? 'Solo lectura: registro realizado por Instructor'
-                          : isResponseLog
-                            ? 'Respuesta / actualización de Bienestar'
-                            : 'Intervención de Bienestar/Admin';
+                          : 'Intervención de Bienestar/Admin';
 
                         return (
                           <div
@@ -3304,7 +3315,7 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
                                   <span className="inline-flex text-[9px] font-bold bg-slate-50 text-slate-500 border border-slate-200 rounded px-1.5 py-0.5">
                                     {readOnlyLabel}
                                   </span>
-                                  {isOwnBienestarLog && !isResponseLog && (
+                                  {isOwnBienestarLog && (
                                     responseLog ? (
                                       <span className="inline-flex items-center gap-1 text-[9px] font-black bg-emerald-50 text-emerald-800 border border-emerald-200 rounded-lg px-2 py-1">
                                         <Check className="w-3 h-3" />
