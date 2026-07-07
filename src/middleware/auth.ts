@@ -7,6 +7,12 @@ export interface AuthRequest extends Request {
   user?: DecodedIdToken;
 }
 
+const buildInternalUserId = (correo: string): string => {
+  const cleanEmail = correo.trim().toLowerCase();
+  const hash = cleanEmail.split('').reduce((acc, char) => ((acc << 5) - acc) + char.charCodeAt(0), 0);
+  return `demo-ins-uid-${Math.abs(hash)}`;
+};
+
 export const requireAuth = async (
   req: AuthRequest,
   res: Response,
@@ -41,6 +47,36 @@ export const requireAuth = async (
       console.log(`[DEV LOG] AUTH_STEP: token_present false | Motivo: Token vacío`);
     }
     return res.status(401).json({ error: 'Unauthorized: Token vacío' });
+  }
+
+  if (token.startsWith('demo-instructor:')) {
+    const correo = token.replace('demo-instructor:', '').trim().toLowerCase();
+    if (!correo || !correo.includes('@')) {
+      if (isDev) {
+        console.log(`[DEV LOG] AUTH_STEP: internal_token_invalid | Motivo: correo inválido`);
+      }
+      return res.status(401).json({ error: 'Unauthorized: Token interno inválido' });
+    }
+
+    const uid = buildInternalUserId(correo);
+    req.user = {
+      uid,
+      email: correo,
+      email_verified: true,
+      aud: 'sena-alertas-internal',
+      auth_time: Math.floor(Date.now() / 1000),
+      exp: Math.floor(Date.now() / 1000) + 60 * 60 * 8,
+      firebase: { sign_in_provider: 'password' },
+      iat: Math.floor(Date.now() / 1000),
+      iss: 'sena-alertas-internal',
+      sub: uid,
+    } as DecodedIdToken;
+
+    if (isDev) {
+      console.log(`[DEV LOG] AUTH_STEP: internal_token_success | email: ${correo}`);
+    }
+    next();
+    return;
   }
 
   const tokenLength = token.length;
@@ -101,3 +137,4 @@ export const requireAuth = async (
     });
   }
 };
+

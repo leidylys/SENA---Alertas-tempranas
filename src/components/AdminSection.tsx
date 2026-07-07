@@ -2583,7 +2583,7 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
 
       setBienestarSuccessMsg(isRespuestaMode
         ? 'Respuesta del aprendiz registrada correctamente en la bitácora.'
-        : 'Intervención registrada correctamente. Ahora puedes agregar la respuesta del aprendiz si aplica.'
+        : 'Intervención registrada correctamente. Ahora puedes agregar una respuesta o actualización si aplica.'
       );
       setBienestarIntervencion('');
       setBienestarRespuesta('');
@@ -2656,6 +2656,15 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
     return matchesSearch && matchesStatus;
   });
 
+  const getStatusMatchesFilter = (status: string, filter: string): boolean => {
+    const priority = getRemisionPriority(status);
+    if (filter === 'todos') return true;
+    if (filter === 'pendientes') return priority === 0;
+    if (filter === 'atendidas') return priority === 1;
+    if (filter === 'cerradas') return priority === 2;
+    return status === filter;
+  };
+
   const filteredRemisiones = remisiones.filter((r) => {
     const derivedStatus = getRemisionStatus(r);
     const text = [
@@ -2667,7 +2676,7 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
       derivedStatus
     ].join(' ').toLowerCase();
     const matchesSearch = text.includes(searchTerm.toLowerCase());
-    const matchesStatus = statusFilter === 'todos' || derivedStatus === statusFilter;
+    const matchesStatus = getStatusMatchesFilter(derivedStatus, statusFilter);
     return matchesSearch && matchesStatus;
   }).sort((a, b) => {
     const statusA = getRemisionStatus(a);
@@ -2688,6 +2697,7 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
 
   const remisionGroups = [
     {
+      filterKey: 'pendientes',
       title: 'Pendientes por atender',
       description: 'Remisiones nuevas sin intervención registrada por Bienestar.',
       emptyText: 'No hay remisiones pendientes por atender.',
@@ -2695,6 +2705,7 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
       badgeClass: 'bg-rose-50 text-rose-800 border-rose-200'
     },
     {
+      filterKey: 'atendidas',
       title: 'Atendidas por Bienestar',
       description: 'Casos con primera intervención o respuesta registrada por Bienestar.',
       emptyText: 'No hay remisiones atendidas con los filtros actuales.',
@@ -2702,11 +2713,43 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
       badgeClass: 'bg-purple-50 text-purple-800 border-purple-200'
     },
     {
+      filterKey: 'cerradas',
       title: 'Cerradas o finalizadas',
       description: 'Casos cerrados o finalizados explícitamente desde Bienestar.',
       emptyText: 'No hay remisiones cerradas o finalizadas con los filtros actuales.',
       items: filteredRemisiones.filter(item => getRemisionPriority(getRemisionStatus(item)) === 2),
       badgeClass: 'bg-emerald-50 text-emerald-800 border-emerald-200'
+    }
+  ];
+
+  const visibleRemisionGroups = remisionGroups.filter(group =>
+    statusFilter === 'todos' || group.filterKey === statusFilter
+  );
+
+  const summaryCards = [
+    {
+      key: 'pendientes',
+      label: 'Pendientes',
+      value: remisionSummary.pendientes,
+      className: 'border-rose-200 text-rose-700 bg-rose-50'
+    },
+    {
+      key: 'atendidas',
+      label: 'Atendidas',
+      value: remisionSummary.enSeguimiento,
+      className: 'border-purple-200 text-purple-700 bg-purple-50'
+    },
+    {
+      key: 'cerradas',
+      label: 'Cerradas / finalizadas',
+      value: remisionSummary.atendidas,
+      className: 'border-emerald-200 text-emerald-700 bg-emerald-50'
+    },
+    {
+      key: 'todos',
+      label: 'Total remisiones',
+      value: remisionSummary.total,
+      className: 'border-slate-200 text-slate-600 bg-slate-50'
     }
   ];
 
@@ -2807,22 +2850,27 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
-        <div className="bg-white border border-rose-200 rounded-xl p-4 shadow-3xs">
-          <span className="text-[10px] font-black text-rose-700 uppercase">Pendientes</span>
-          <strong className="block text-2xl text-rose-950 mt-1">{remisionSummary.pendientes}</strong>
-        </div>
-        <div className="bg-white border border-purple-200 rounded-xl p-4 shadow-3xs">
-          <span className="text-[10px] font-black text-purple-700 uppercase">Atendidas</span>
-          <strong className="block text-2xl text-purple-950 mt-1">{remisionSummary.enSeguimiento}</strong>
-        </div>
-        <div className="bg-white border border-emerald-200 rounded-xl p-4 shadow-3xs">
-          <span className="text-[10px] font-black text-emerald-700 uppercase">Cerradas / finalizadas</span>
-          <strong className="block text-2xl text-emerald-950 mt-1">{remisionSummary.atendidas}</strong>
-        </div>
-        <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-3xs">
-          <span className="text-[10px] font-black text-slate-600 uppercase">Total remisiones</span>
-          <strong className="block text-2xl text-slate-900 mt-1">{remisionSummary.total}</strong>
-        </div>
+        {summaryCards.map(card => {
+          const isActive = statusFilter === card.key;
+          return (
+            <button
+              key={card.key}
+              type="button"
+              onClick={() => setStatusFilter(card.key)}
+              className={`text-left bg-white border rounded-xl p-4 shadow-3xs transition-all cursor-pointer ${
+                isActive
+                  ? 'ring-2 ring-purple-300 border-purple-400 bg-purple-50/60'
+                  : `${card.className} hover:shadow-sm hover:-translate-y-0.5`
+              }`}
+            >
+              <span className={`text-[10px] font-black uppercase ${isActive ? 'text-purple-900' : card.className.split(' ')[1]}`}>
+                {card.label}
+              </span>
+              <strong className="block text-2xl text-slate-900 mt-1">{card.value}</strong>
+              {isActive && <span className="inline-flex mt-2 text-[9px] font-black text-purple-800 bg-white border border-purple-200 px-2 py-0.5 rounded-full">Filtro activo</span>}
+            </button>
+          );
+        })}
       </div>
 
       {/* Filters and Search Bar */}
@@ -2846,14 +2894,9 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
             className="border border-slate-250 bg-white rounded-lg px-3 py-1.5 text-xs font-bold text-slate-700 outline-none focus:ring-1 focus:ring-red-500"
           >
             <option value="todos">Todos los Estados</option>
-            <option value="Pendiente por atender">Pendiente por atender</option>
-            <option value="Atendido por Bienestar">Atendido por Bienestar</option>
-            <option value="Con respuesta del aprendiz">Con respuesta del aprendiz</option>
-            <option value="Cerrado o finalizado">Cerrado o finalizado</option>
-            <option value="Requiere intervención administrativa">Requiere intervención administrativa</option>
-            <option value="En trámite">En trámite</option>
-            <option value="Cerrado">Cerrado</option>
-            <option value="Cerrado por mejora">Cerrado por mejora</option>
+            <option value="pendientes">Pendientes por atender</option>
+            <option value="atendidas">Atendidas / con respuesta</option>
+            <option value="cerradas">Cerradas o finalizadas</option>
           </select>
           
           <button 
@@ -2869,7 +2912,7 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
 
       {!loading && !error && (
         <div className="space-y-4">
-          {remisionGroups.map(group => (
+          {visibleRemisionGroups.map(group => (
             <div key={group.title} className="bg-white border border-slate-200 rounded-xl shadow-3xs overflow-hidden">
               <div className="px-4 py-3 bg-slate-50 border-b border-slate-100 flex items-center justify-between gap-3">
                 <div>
@@ -2905,17 +2948,7 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
             Reintentar
           </button>
         </div>
-      ) : filteredAlertas.length === 0 ? (
-        <div className="py-16 text-center border border-slate-150 border-dashed rounded-xl bg-slate-50/40 space-y-3">
-          <CheckCircle className="w-12 h-12 text-[#39A900] mx-auto animate-pulse" />
-          <div className="space-y-1">
-            <h4 className="text-sm font-extrabold text-slate-800">¡No hay Alertas Críticas Vigentes!</h4>
-            <p className="text-xs text-slate-500 max-w-md mx-auto">
-              Todos los aprendices se encuentran en un margen de llamados saludable (menos de 4 llamados) o sus alertas administrativas han sido cerradas con éxito.
-            </p>
-          </div>
-        </div>
-      ) : (
+      ) : filteredAlertas.length === 0 ? null : (
         <div className="bg-white border border-slate-200 rounded-xl shadow-3xs overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse">
@@ -3132,7 +3165,7 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
                   <div className="bg-purple-50 px-4 py-2 border-b border-purple-100 space-y-2">
                     <div className="flex items-center justify-between gap-2">
                       <h4 className="text-[11px] font-black text-purple-900 uppercase">
-                        {bienestarMode === 'respuesta' ? 'Agregar respuesta del aprendiz' : 'Registrar actuación de Bienestar'}
+                        {bienestarMode === 'respuesta' ? 'Agregar respuesta o actualización' : 'Registrar actuación de Bienestar'}
                       </h4>
                       <span className="text-[9px] font-bold text-purple-700 bg-white border border-purple-200 px-2 py-0.5 rounded-full">
                         Bitácora compartida
@@ -3160,7 +3193,7 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
                             : 'bg-white text-purple-700 border-purple-200 hover:bg-purple-50'
                         }`}
                       >
-                        Agregar respuesta del aprendiz
+                        Agregar respuesta o actualización
                       </button>
                     </div>
                   </div>
