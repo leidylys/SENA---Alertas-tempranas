@@ -2355,6 +2355,8 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
   const [bienestarMode, setBienestarMode] = useState<'intervencion' | 'respuesta'>('intervencion');
   const [bienestarSuccessMsg, setBienestarSuccessMsg] = useState<string | null>(null);
   const [savingBienestar, setSavingBienestar] = useState(false);
+  const [expandedBienestarLogId, setExpandedBienestarLogId] = useState<string | null>(null);
+  const [respondingToBienestarLog, setRespondingToBienestarLog] = useState<{ id: string; label: string } | null>(null);
 
   const getRemisionStatus = (remision: any): string => {
     const raw = String(remision?.estadoRemision || '').trim();
@@ -2429,6 +2431,52 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
   const getLatestBienestarLog = (remision: any): any | null => {
     const history = remision?.historialCompartido || remision?.historial || [];
     return history.find((item: any) => getAreaResponsable(item) === 'Bienestar/Admin') || null;
+  };
+
+  const getBitacoraLogId = (item: any, index = 0): string => {
+    return String(item?.id || item?.seguimientoId || item?.fechaRegistro || item?.fecha || `log-${index}`);
+  };
+
+  const getBitacoraLogLabel = (item: any, index = 0): string => {
+    const type = item?.tipoSeguimiento || item?.medioComunicacion || 'Seguimiento';
+    const date = item?.fecha || item?.fechaRegistro || 'Sin fecha';
+    return `${type} · ${date} · ${getBitacoraLogId(item, index)}`;
+  };
+
+  const isBienestarResponseLog = (item: any): boolean => {
+    if (getAreaResponsable(item) !== 'Bienestar/Admin') return false;
+    const text = [
+      item?.tipoSeguimiento,
+      item?.medioComunicacion,
+      item?.observacion,
+      item?.detalles,
+      item?.detalle,
+      item?.respuestaAprendiz
+    ].join(' ').toLowerCase();
+    return text.includes('respuesta') || text.includes('actualización') || text.includes('actualizacion');
+  };
+
+  const getBienestarResponseForLog = (history: any[], item: any, index = 0): any | null => {
+    const sourceId = getBitacoraLogId(item, index);
+    const sourceLabel = getBitacoraLogLabel(item, index).toLowerCase();
+    const itemTime = new Date(item?.fechaRegistro || item?.fecha || item?.createdAt || 0).getTime();
+    const normalizedItemTime = Number.isFinite(itemTime) ? itemTime : 0;
+
+    return history.find((candidate: any) => {
+      if (candidate === item || !isBienestarResponseLog(candidate)) return false;
+      const candidateText = [
+        candidate?.observacion,
+        candidate?.detalles,
+        candidate?.detalle,
+        candidate?.asunto
+      ].join(' ').toLowerCase();
+      if (candidateText.includes(sourceId.toLowerCase()) || candidateText.includes(sourceLabel)) {
+        return true;
+      }
+      const candidateTime = new Date(candidate?.fechaRegistro || candidate?.fecha || candidate?.createdAt || 0).getTime();
+      const normalizedCandidateTime = Number.isFinite(candidateTime) ? candidateTime : 0;
+      return normalizedItemTime > 0 && normalizedCandidateTime >= normalizedItemTime;
+    }) || null;
   };
 
   const getUltimaIntervencionResumen = (remision: any): { meta: string; resumen: string } => {
@@ -2519,6 +2567,25 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
     setBienestarNota('');
     setBienestarMode('intervencion');
     setBienestarSuccessMsg(null);
+    setExpandedBienestarLogId(null);
+    setRespondingToBienestarLog(null);
+  };
+
+  const handleStartBienestarResponse = (item?: any, index = 0) => {
+    const history = selectedRemision?.historialCompartido || selectedRemision?.historial || [];
+    const target = item || history.find((hist: any) => getAreaResponsable(hist) === 'Bienestar/Admin' && !isBienestarResponseLog(hist));
+    if (!target) return;
+    const id = getBitacoraLogId(target, index);
+    setExpandedBienestarLogId(id);
+    setRespondingToBienestarLog({ id, label: getBitacoraLogLabel(target, index) });
+    setBienestarMode('respuesta');
+    setBienestarRespuesta('');
+    setBienestarAcuerdos('');
+    setBienestarNota('');
+    setTimeout(() => {
+      const el = document.getElementById('bienestar-bitacora-form');
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 50);
   };
 
   const handleGuardarIntervencionBienestar = async (e: React.FormEvent) => {
@@ -2533,6 +2600,19 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
       alert('La respuesta del aprendiz es obligatoria para registrar esta actualización.');
       return;
     }
+    if (bienestarMode === 'respuesta' && !respondingToBienestarLog) {
+      alert('Seleccione primero la intervención de Bienestar que desea responder o actualizar.');
+      return;
+    }
+    if (bienestarMode === 'respuesta' && respondingToBienestarLog) {
+      const history = (selectedRemision.historialCompartido || selectedRemision.historial || []) as any[];
+      const targetIndex = history.findIndex((item: any, index: number) => getBitacoraLogId(item, index) === respondingToBienestarLog.id);
+      const targetLog = targetIndex >= 0 ? history[targetIndex] : null;
+      if (targetLog && getBienestarResponseForLog(history, targetLog, targetIndex)) {
+        alert('Esta intervención ya tiene una respuesta o actualización registrada.');
+        return;
+      }
+    }
     setSavingBienestar(true);
 
     try {
@@ -2541,6 +2621,7 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
       const observacionEstructurada = isRespuestaMode
         ? [
             'Respuesta / actualización de Bienestar',
+            `Relacionado con: ${respondingToBienestarLog?.label || 'Intervención de Bienestar'}`,
             `Fecha de registro: ${bienestarFecha}`,
             `Respuesta del aprendiz: ${bienestarRespuesta.trim()}`,
             `Acuerdos o compromisos: ${bienestarAcuerdos.trim() || 'No registrados'}`,
@@ -2595,8 +2676,18 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
       const updatedRemision = nextRemisiones.find((item: any) => String(item.id) === String(selectedRemision.id));
       if (updatedRemision) {
         setSelectedRemision(updatedRemision);
+        const updatedHistory = updatedRemision.historialCompartido || updatedRemision.historial || [];
+        const latestOwnLog = updatedHistory.find((item: any) => getAreaResponsable(item) === 'Bienestar/Admin' && !isBienestarResponseLog(item));
+        if (!isRespuestaMode && latestOwnLog) {
+          const nextLabel = getBitacoraLogLabel(latestOwnLog);
+          setExpandedBienestarLogId(getBitacoraLogId(latestOwnLog));
+          setRespondingToBienestarLog({ id: getBitacoraLogId(latestOwnLog), label: nextLabel });
+        }
       }
-      setBienestarMode('respuesta');
+      setBienestarMode(isRespuestaMode ? 'intervencion' : 'respuesta');
+      if (isRespuestaMode) {
+        setRespondingToBienestarLog(null);
+      }
     } catch (err: any) {
       alert(err.message || 'No fue posible registrar la intervención de Bienestar.');
     } finally {
@@ -3124,48 +3215,127 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
                   <div className="bg-slate-50 px-4 py-2 border-b border-slate-200">
                     <h4 className="text-[11px] font-black text-slate-700 uppercase">Historial compartido</h4>
                   </div>
-                  <div className="p-3 space-y-2 max-h-64 overflow-y-auto">
-                    {((selectedRemision.historialCompartido || selectedRemision.historial || []) as any[]).length === 0 ? (
-                      <p className="text-xs text-slate-400 font-semibold">No hay historial asociado.</p>
-                    ) : (
-                      (selectedRemision.historialCompartido || selectedRemision.historial || []).map((item: any) => {
+                  <div className="p-3 space-y-2 max-h-80 overflow-y-auto">
+                    {(() => {
+                      const history = ((selectedRemision.historialCompartido || selectedRemision.historial || []) as any[]);
+                      if (history.length === 0) {
+                        return <p className="text-xs text-slate-400 font-semibold">No hay historial asociado.</p>;
+                      }
+
+                      return history.map((item: any, index: number) => {
                         const area = getAreaResponsable(item);
+                        const logId = getBitacoraLogId(item, index);
+                        const isExpanded = expandedBienestarLogId === logId;
+                        const isOwnBienestarLog = area === 'Bienestar/Admin';
+                        const isResponseLog = isBienestarResponseLog(item);
+                        const responseLog = isOwnBienestarLog && !isResponseLog ? getBienestarResponseForLog(history, item, index) : null;
                         const readOnlyLabel = area === 'Instructor' || area === 'Instructor que remite'
                           ? 'Solo lectura: registro realizado por Instructor'
-                          : 'Actuación de Bienestar/Admin';
+                          : isResponseLog
+                            ? 'Respuesta / actualización de Bienestar'
+                            : 'Intervención de Bienestar/Admin';
+
                         return (
-                        <div key={item.id} className="bg-white border border-slate-100 rounded-lg p-2 text-[10.5px]">
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="font-black text-slate-700">{item.tipoSeguimiento || 'Seguimiento'}</span>
-                            <span className={`border rounded-full px-2 py-0.5 text-[9px] font-black ${
-                              area === 'Bienestar/Admin'
-                                ? 'bg-purple-50 text-purple-800 border-purple-200'
-                                : 'bg-slate-50 text-slate-600 border-slate-200'
-                            }`}>
-                              {area}
-                            </span>
+                          <div
+                            key={logId}
+                            className={`bg-white rounded-lg text-[10.5px] border shadow-5xs overflow-hidden ${
+                              isOwnBienestarLog ? 'border-purple-150' : 'border-slate-150'
+                            }`}
+                          >
+                            <button
+                              type="button"
+                              onClick={() => setExpandedBienestarLogId(isExpanded ? null : logId)}
+                              className={`w-full p-2.5 text-left flex items-start justify-between gap-2 transition-colors ${
+                                isOwnBienestarLog ? 'hover:bg-purple-50/70' : 'hover:bg-slate-50'
+                              }`}
+                            >
+                              <div className="min-w-0">
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  <span className="font-black text-slate-800">{item.tipoSeguimiento || 'Seguimiento'}</span>
+                                  <span className={`border rounded-full px-2 py-0.5 text-[9px] font-black ${
+                                    isOwnBienestarLog
+                                      ? 'bg-purple-50 text-purple-800 border-purple-200'
+                                      : 'bg-slate-50 text-slate-600 border-slate-200'
+                                  }`}>
+                                    {area}
+                                  </span>
+                                  {responseLog && (
+                                    <span className="border rounded-full px-2 py-0.5 text-[9px] font-black bg-emerald-50 text-emerald-800 border-emerald-200">
+                                      Respuesta registrada
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="text-slate-400 mt-0.5 flex flex-wrap gap-x-2 gap-y-0.5">
+                                  <span>{item.fecha || item.fechaRegistro || 'Sin fecha'}</span>
+                                  <span>{item.medioComunicacion || 'Medio no disponible'}</span>
+                                  <span>{item.creadoPorNombre || item.usuarioResponsableNombre || 'Responsable no disponible'}</span>
+                                </div>
+                              </div>
+                              {isExpanded ? (
+                                <ChevronUp className="w-4 h-4 text-slate-400 shrink-0 mt-0.5" />
+                              ) : (
+                                <ChevronDown className="w-4 h-4 text-slate-400 shrink-0 mt-0.5" />
+                              )}
+                            </button>
+
+                            {isExpanded && (
+                              <div className="px-2.5 pb-2.5 pt-1 border-t border-slate-100 space-y-2 animate-fade-in">
+                                <p className="text-slate-600 whitespace-pre-wrap leading-relaxed">
+                                  {item.observacion || item.detalles || item.detalle || 'Sin detalle'}
+                                </p>
+                                {item.respuestaAprendiz && (
+                                  <div className="bg-emerald-50 border border-emerald-100 rounded-lg p-2 text-emerald-900">
+                                    <span className="font-black block text-[9px] uppercase">Respuesta / justificación</span>
+                                    <p className="mt-0.5 whitespace-pre-wrap">{item.respuestaAprendiz}</p>
+                                  </div>
+                                )}
+                                {responseLog && (
+                                  <div className="pl-3 border-l-2 border-[#007832] bg-emerald-50/60 p-2 rounded-lg text-[10px] space-y-1">
+                                    <div className="flex items-center justify-between gap-2">
+                                      <span className="font-black text-emerald-900">{responseLog.tipoSeguimiento || 'Respuesta registrada'}</span>
+                                      <span className="text-slate-500">{responseLog.fecha || responseLog.fechaRegistro || 'Sin fecha'}</span>
+                                    </div>
+                                    <p className="text-emerald-900 whitespace-pre-wrap">
+                                      {responseLog.observacion || responseLog.detalles || responseLog.detalle || 'Respuesta registrada sin detalle adicional.'}
+                                    </p>
+                                  </div>
+                                )}
+                                <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                                  <span className="inline-flex text-[9px] font-bold bg-slate-50 text-slate-500 border border-slate-200 rounded px-1.5 py-0.5">
+                                    {readOnlyLabel}
+                                  </span>
+                                  {isOwnBienestarLog && !isResponseLog && (
+                                    responseLog ? (
+                                      <span className="inline-flex items-center gap-1 text-[9px] font-black bg-emerald-50 text-emerald-800 border border-emerald-200 rounded-lg px-2 py-1">
+                                        <Check className="w-3 h-3" />
+                                        Respuesta registrada
+                                      </span>
+                                    ) : (
+                                      <button
+                                        type="button"
+                                        onClick={() => handleStartBienestarResponse(item, index)}
+                                        className="inline-flex items-center gap-1 px-2 py-1 bg-[#007832] hover:bg-[#005c24] text-white font-black text-[9px] rounded-lg transition-colors cursor-pointer shadow-3xs"
+                                      >
+                                        <Plus className="w-3 h-3" />
+                                        <span>Agregar respuesta o actualización</span>
+                                      </button>
+                                    )
+                                  )}
+                                </div>
+                              </div>
+                            )}
                           </div>
-                          <div className="text-slate-400 mt-0.5 flex flex-wrap gap-x-2 gap-y-0.5">
-                            <span>{item.fecha || item.fechaRegistro || 'Sin fecha'}</span>
-                            <span>{item.medioComunicacion || 'Medio no disponible'}</span>
-                            <span>{item.creadoPorNombre || item.usuarioResponsableNombre || 'Responsable no disponible'}</span>
-                          </div>
-                          <p className="text-slate-600 mt-1 whitespace-pre-wrap">{item.observacion || item.detalles || item.detalle || 'Sin detalle'}</p>
-                          <span className="inline-flex mt-2 text-[9px] font-bold bg-slate-50 text-slate-500 border border-slate-200 rounded px-1.5 py-0.5">
-                            {readOnlyLabel}
-                          </span>
-                        </div>
                         );
-                      })
-                    )}
+                      });
+                    })()}
                   </div>
                 </div>
 
-                <form onSubmit={handleGuardarIntervencionBienestar} className="border border-purple-200 rounded-xl overflow-hidden">
+                <form id="bienestar-bitacora-form" onSubmit={handleGuardarIntervencionBienestar} className="border border-purple-200 rounded-xl overflow-hidden">
                   <div className="bg-purple-50 px-4 py-2 border-b border-purple-100 space-y-2">
                     <div className="flex items-center justify-between gap-2">
                       <h4 className="text-[11px] font-black text-purple-900 uppercase">
-                        {bienestarMode === 'respuesta' ? 'Agregar respuesta o actualización' : 'Registrar actuación de Bienestar'}
+                        {bienestarMode === 'respuesta' ? 'Agregar respuesta o actualización' : 'Registrar intervención de Bienestar'}
                       </h4>
                       <span className="text-[9px] font-bold text-purple-700 bg-white border border-purple-200 px-2 py-0.5 rounded-full">
                         Bitácora compartida
@@ -3174,7 +3344,10 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
                     <div className="flex flex-wrap gap-2">
                       <button
                         type="button"
-                        onClick={() => setBienestarMode('intervencion')}
+                        onClick={() => {
+                          setBienestarMode('intervencion');
+                          setRespondingToBienestarLog(null);
+                        }}
                         className={`px-2.5 py-1 rounded-lg text-[10px] font-black border transition-colors ${
                           bienestarMode === 'intervencion'
                             ? 'bg-purple-700 text-white border-purple-700'
@@ -3185,7 +3358,7 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
                       </button>
                       <button
                         type="button"
-                        onClick={() => setBienestarMode('respuesta')}
+                        onClick={() => handleStartBienestarResponse()}
                         disabled={!getLatestBienestarLog(selectedRemision) && !bienestarSuccessMsg}
                         className={`px-2.5 py-1 rounded-lg text-[10px] font-black border transition-colors disabled:opacity-45 disabled:cursor-not-allowed ${
                           bienestarMode === 'respuesta'
@@ -3201,6 +3374,23 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
                     {bienestarSuccessMsg && (
                       <div className="bg-emerald-50 border border-emerald-200 text-emerald-900 rounded-lg px-3 py-2 text-xs font-semibold">
                         {bienestarSuccessMsg}
+                      </div>
+                    )}
+                    {bienestarMode === 'respuesta' && respondingToBienestarLog && (
+                      <div className="bg-blue-50 border border-blue-200 p-2.5 rounded-lg text-blue-800 text-xs flex items-center justify-between gap-2 font-medium">
+                        <span>
+                          Respondiendo o actualizando: <strong className="font-extrabold">{respondingToBienestarLog.label}</strong>
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setRespondingToBienestarLog(null);
+                            setBienestarMode('intervencion');
+                          }}
+                          className="text-[10px] font-bold text-blue-600 hover:text-blue-850 underline focus:outline-none shrink-0"
+                        >
+                          Cancelar respuesta
+                        </button>
                       </div>
                     )}
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -3324,7 +3514,7 @@ function AlertasCriticasSection({ authToken }: { authToken: string }) {
                         ) : (
                           <>
                             <Check className="w-3.5 h-3.5 text-white" />
-                            {bienestarMode === 'respuesta' ? 'Registrar respuesta' : 'Registrar intervención'}
+                            {bienestarMode === 'respuesta' ? 'Registrar respuesta / actualización' : 'Registrar intervención'}
                           </>
                         )}
                       </button>
